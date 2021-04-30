@@ -90,7 +90,7 @@ class XISF:
      - Complex, Vector, Matrix and Table properties
 
     Usage example:
-    >>> import XISF
+    >>> from xisf import XISF
     >>> import matplotlib.pyplot as plt
     >>> xisf = XISF()
     >>> xisf.read("file.xisf")
