@@ -1,6 +1,6 @@
-# xisf
+# XISF for python
 
-Implements an *uncomplete* XISF (Extensible Image Serialization Format) Decoder. It parses file and attached images metadata. Image data is extracted as a numpy ndarray.
+Implements an *uncomplete* XISF (Extensible Image Serialization Format) Decoder in native python. It parses file and attached images metadata. Image data is extracted as a numpy ndarray.
 
 What's supported: 
  - Reads Monolithic XISF files
