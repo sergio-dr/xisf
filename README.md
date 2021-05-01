@@ -1,6 +1,6 @@
 # xisf
 
-Implements an *uncomplete* XISF (Extensible Image Serialization Format) Decoder. It parses file and attached images metadata. Image data is returned as a numpy ndarray, using the "channels last" convention. 
+Implements an *uncomplete* XISF (Extensible Image Serialization Format) Decoder. It parses file and attached images metadata. Image data is extracted as a numpy ndarray.
 
 What's supported: 
  - Reads Monolithic XISF files
