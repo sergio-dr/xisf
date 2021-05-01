@@ -26,48 +26,6 @@ import lz4.block # https://python-lz4.readthedocs.io/en/stable/lz4.block.html
 import zlib # https://docs.python.org/3/library/zlib.html
 
 
-# Auxiliary functions to parse some metadata attributes
-# Returns image shape, e.g. (x, y, channels)
-def _parse_geometry(g):
-    return tuple(map(int, g.split(':')))
-
-# Returns (position, size)
-def _parse_location(l):
-    ll = l.split(':')
-    if ll[0] != 'attachment':
-        raise NotImplementedError("Image location type '%s' not implemented" % (ll[0],))
-    return tuple(map(int, ll[1:]))
-
-# Return equivalent numpy dtype
-def _parse_sampleFormat(s):
-    _dtypes = { 
-        'UInt8': np.dtype('uint8'),
-        'UInt16': np.dtype('uint16'),
-        'UInt32': np.dtype('uint32'),
-        'Float32': np.dtype('float32'),
-        'Float64': np.dtype('float64'),
-    }
-    try:
-        dtype = _dtypes[s]            
-    except:
-        raise NotImplementedError("sampleFormat %s not implemented" % (s,))
-    return dtype
-
-# Returns (codec, uncompressed_size, item_size); item_size is None if not using byte shuffling
-def _parse_compression(c):       
-    cl = c.split(':')
-    if len(cl) == 3: # (codec+byteshuffling, uncompressed_size, shuffling_item_size)
-        return (cl[0], int(cl[1]), int(cl[2]))
-    else:  # (codec, uncompressed_size, None)
-        return (cl[0], int(cl[1]), None)
-
-# Auxiliary function to implement un-byteshuffling with numpy
-def _unshuffle(d, item_size):
-    a = np.frombuffer(d, dtype=np.dtype('uint8'))
-    a = a.reshape((item_size, -1))
-    return np.transpose(a).tobytes()
-
-
 class XISF:
     """Implements an uncomplete XISF Decoder. It parses file and attached images metadata. Image data is returned as a 
     numpy ndarray, using the "channels last" convention. 
@@ -159,9 +117,9 @@ class XISF:
             # parses and translates sampleFormat to numpy dtypes, 
             # and extend with metadata from children entities (FITSKeywords, XISFProperties)
             image_extended_meta = {
-                'geometry': _parse_geometry(image.attrib['geometry']),
-                'location': _parse_location(image.attrib['location']), 
-                'dtype': _parse_sampleFormat(image.attrib['sampleFormat']), 
+                'geometry': self._parse_geometry(image.attrib['geometry']),
+                'location': self._parse_location(image.attrib['location']), 
+                'dtype': self._parse_sampleFormat(image.attrib['sampleFormat']), 
                 'FITSKeywords': {a.attrib['name']: a.attrib['value'] 
                     for a in image.findall('xisf:FITSKeyword', self._xml_ns)
                 },
@@ -171,7 +129,7 @@ class XISF:
             }
             # Also parses compression attribute if present, converting it to a tuple
             if 'compression' in image.attrib:
-                image_extended_meta['compression'] = _parse_compression(image.attrib['compression'])
+                image_extended_meta['compression'] = self._parse_compression(image.attrib['compression'])
 
             # Merge basic and extended metadata in a dict 
             image_meta = {**image_basic_meta, **image_extended_meta}
@@ -216,14 +174,16 @@ class XISF:
         return self._file_meta
 
 
-    def read_image(self, n):
+    def read_image(self, n, data_format='channels_last'):
         """Extracts an image from a XISF file already opened with read().
 
         Args:
             n: index of the image to extract in the list returned by get_images_metadata()
+            data_format: channels axis can be 'channels_first' or 'channels_last' (as used in 
+            keras/tensorflow, pyplot's imshow, etc.)
         
         Returns:
-            Numpy ndarray with the image data, in "channels-last" format.
+            Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
 
         """        
         try:
@@ -257,7 +217,7 @@ class XISF:
                 raise NotImplementedError("Unimplemented compression codec %s" % (codec,))
 
             if item_size: # using byte-shuffling
-                im_data = _unshuffle(im_data, item_size)
+                im_data = self._unshuffle(im_data, item_size)
             
             im_data = np.frombuffer(im_data, dtype=meta['dtype'])
 
@@ -267,9 +227,59 @@ class XISF:
             im_data = np.fromfile(self._f, offset=pos, dtype=meta['dtype'], count=h*w*chc)
 
         im_data = im_data.reshape((chc,h,w))
-        return np.transpose(im_data, (1, 2, 0)) # channels-last convention (tensorflow, matplotlib's imshow, etc)
+        return np.transpose(im_data, (1, 2, 0)) if data_format == 'channels_last' else im_data
 
 
     def close(self):
         self._f.close()
-        
+
+
+    # Auxiliary functions to parse some metadata attributes
+    # Returns image shape, e.g. (x, y, channels)
+    @staticmethod
+    def _parse_geometry(g):
+        return tuple(map(int, g.split(':')))
+
+
+    # Returns (position, size)
+    @staticmethod
+    def _parse_location(l):
+        ll = l.split(':')
+        if ll[0] != 'attachment':
+            raise NotImplementedError("Image location type '%s' not implemented" % (ll[0],))
+        return tuple(map(int, ll[1:]))
+
+
+    # Return equivalent numpy dtype
+    @staticmethod
+    def _parse_sampleFormat(s):
+        _dtypes = { 
+            'UInt8': np.dtype('uint8'),
+            'UInt16': np.dtype('uint16'),
+            'UInt32': np.dtype('uint32'),
+            'Float32': np.dtype('float32'),
+            'Float64': np.dtype('float64'),
+        }
+        try:
+            dtype = _dtypes[s]            
+        except:
+            raise NotImplementedError("sampleFormat %s not implemented" % (s,))
+        return dtype
+
+
+    # Returns (codec, uncompressed_size, item_size); item_size is None if not using byte shuffling
+    @staticmethod
+    def _parse_compression(c):       
+        cl = c.split(':')
+        if len(cl) == 3: # (codec+byteshuffling, uncompressed_size, shuffling_item_size)
+            return (cl[0], int(cl[1]), int(cl[2]))
+        else:  # (codec, uncompressed_size, None)
+            return (cl[0], int(cl[1]), None)
+
+
+    # Auxiliary function to implement un-byteshuffling with numpy
+    @staticmethod
+    def _unshuffle(d, item_size):
+        a = np.frombuffer(d, dtype=np.dtype('uint8'))
+        a = a.reshape((item_size, -1))
+        return np.transpose(a).tobytes()        
