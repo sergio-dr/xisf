@@ -29,19 +29,21 @@ from datetime import datetime
 
 
 class XISF:
-    """Implements an incomplete Baseline XISF Decoder. It parses file and attached images metadata. Image data is 
-    returned as a numpy ndarray, using the "channels-last" convention. 
+    """Implements an *incomplete* (attached images only) baseline XISF Decoder and a simple baseline Encoder. 
+    It parses metadata from Image and Metadata XISF core elements. Image data is returned as a numpy ndarray 
+    (using the "channels-last" convention by default). 
 
     What's supported: 
      - Monolithic XISF files only
-       - XISF blocks with attachment block locations
+       - XISF blocks with attachment block locations (neither inline nor embedded block locations as required 
+       for a complete baseline decoder)
        - Planar pixel storage models, *however it assumes 2D images only* (with multiple channels)
        - UInt8/16/32 and Float32/64 pixel sample formats
        - Grayscale and RGB color spaces     
      - Decoding:
        - multiple Image core elements from a monolithic XISF file
        - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
-     byte shuffling)
+       byte shuffling)
      - Encoding:
        - Single image core element
        - Uncompressed data blocks only       
