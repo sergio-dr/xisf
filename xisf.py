@@ -20,8 +20,6 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-# TODO: FITSKeywords se pueden repetir (HISTORY)
-
 import xml.etree.ElementTree as ET
 import numpy as np
 import lz4.block # https://python-lz4.readthedocs.io/en/stable/lz4.block.html
@@ -216,13 +214,22 @@ class XISF:
             # parses and translates sampleFormat to numpy dtypes, 
             # and extend with metadata from children entities (FITSKeywords, XISFProperties)
             # TODO: Resolution, ICCProfile, Thumbnail, ...
+            
+            # The same FITS keyword can appear multiple times, so we have to 
+            # prepare a dict of lists. Each element in the list is a dict
+            # that hold the value and the comment associated with the keyword.
+            # Not as clear as I would like. 
+            fits_keywords = {}
+            for a in image.findall('xisf:FITSKeyword', self._xml_ns):
+                fits_keywords.setdefault(a.attrib['name'], []).append({
+                    'value': a.attrib['value'],
+                    'comment': a.attrib['comment'],
+                })
             image_extended_meta = {
                 'geometry': self._parse_geometry(image.attrib['geometry']),
                 'location': self._parse_location(image.attrib['location']), 
                 'dtype': self._parse_sampleFormat(image.attrib['sampleFormat']), 
-                'FITSKeywords': {a.attrib['name']: a.attrib['value'] 
-                    for a in image.findall('xisf:FITSKeyword', self._xml_ns)
-                },
+                'FITSKeywords': fits_keywords,
                 'XISFProperties': {a.attrib['id']: a.attrib.get('value', a.text) 
                     for a in image.findall('xisf:Property', self._xml_ns)
                 }
@@ -256,8 +263,11 @@ class XISF:
                 'compression': (codec, uncompressed_size, item_size), # optional
                 'key': 'value', # other <Image> attributes are simply copied 
                 ..., 
-                'FITSKeywords': { 'key': 'value', ... }, # child attributes are also copied
-                'XISFProperties': { 'key': 'value', ... }
+                'FITSKeywords': { 
+                    <key>: [ {'value': <value>, 'comment': <comment> }, ...], 
+                    ... 
+                }, 
+                'XISFProperties': { <key>: value, ... }
             }
 
         """          
@@ -387,6 +397,7 @@ class XISF:
         xisf_header_xml = ET.Element('xisf', XISF._xisf_attrs)
 
         image_xml = ET.SubElement(xisf_header_xml, 'Image', image_attrs)
+        # XISFProperties
         for property_id, value in image_metadata['XISFProperties'].items():
             property_type = XISF._property_types[property_id] # TODO: error handling
             if property_type == 'String':
@@ -400,8 +411,14 @@ class XISF:
                     'type': property_type, 
                     'value': value
                 })
-
-        # TODO: FITSKeywords
+        # FITSKeywords
+        for keyword_name, data in image_metadata['FITSKeywords'].items():
+            for entry in data:
+                ET.SubElement(image_xml, 'FITSKeyword', {
+                    'name': keyword_name,
+                    'value': entry['value'],
+                    'comment': entry['comment']
+                })
 
         metadata_xml = ET.SubElement(xisf_header_xml, 'Metadata')
         for property_id, value in xisf_metadata.items():
