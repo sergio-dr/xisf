@@ -400,8 +400,12 @@ class XISF:
 
         image_xml = ET.SubElement(xisf_header_xml, 'Image', image_attrs)
         # XISFProperties
-        for property_id, value in image_metadata['XISFProperties'].items():
-            property_type = XISF._property_types[property_id] # TODO: error handling
+        for property_id, value in image_metadata.get('XISFProperties', {}).items():
+            try:
+                property_type = XISF._property_types[property_id] # TODO: error handling
+            except KeyError as e:
+                print("Warning: unknown Image property %s" % (property_id,))
+            
             if property_type == 'String':
                 ET.SubElement(image_xml, 'Property', {
                     'id': property_id,
@@ -413,8 +417,9 @@ class XISF:
                     'type': property_type, 
                     'value': value
                 })
+
         # FITSKeywords
-        for keyword_name, data in image_metadata['FITSKeywords'].items():
+        for keyword_name, data in image_metadata.get('FITSKeywords', {}).items():
             for entry in data:
                 ET.SubElement(image_xml, 'FITSKeyword', {
                     'name': keyword_name,
@@ -422,9 +427,14 @@ class XISF:
                     'comment': entry['comment']
                 })
 
+
         metadata_xml = ET.SubElement(xisf_header_xml, 'Metadata')
         for property_id, value in xisf_metadata.items():
-            property_type = XISF._property_types[property_id] # TODO: error handling
+            try:
+                property_type = XISF._property_types[property_id] # TODO: error handling
+            except KeyError as e:
+                print("Warning: unknown Metadata property %s" % (property_id,))
+
             if property_type == 'String':
                 ET.SubElement(metadata_xml, 'Property', {
                     'id': property_id,
