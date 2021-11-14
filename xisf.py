@@ -1,7 +1,7 @@
 # coding: utf-8
 
 """
-Very crude and incomplete XISF Decoder (see https://pixinsight.com/xisf/).
+(Incomplete) XISF Encoder/Decoder (see https://pixinsight.com/xisf/).
 
 This implementation is not endorsed nor related with PixInsight development team.
 
@@ -67,7 +67,17 @@ class XISF:
     >>> ims_meta
     >>> im_data = xisf.read_image(0)
     >>> plt.imshow(im_data)
+    >>> plt.show()
     >>> XISF.write("output.xisf", im_data, ims_meta[0], file_meta)
+
+    If the file is not huge and it contains only an image (or you're interested just in one of the 
+    images inside the file), there is a convenience method for reading the data and the metadata:
+    >>> from xisf import XISF
+    >>> import matplotlib.pyplot as plt    
+    >>> im_data = XISF.read("file.xisf")
+    >>> plt.imshow(im_data)
+    >>> plt.show()
+
 
     The XISF format specification is available at https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html
     """
@@ -286,13 +296,13 @@ class XISF:
         return self._file_meta
 
 
-    def read_image(self, n, data_format='channels_last'):
+    def read_image(self, n=0, data_format='channels_last'):
         """Extracts an image from a XISF object.
 
         Args:
             n: index of the image to extract in the list returned by get_images_metadata()
             data_format: channels axis can be 'channels_first' or 'channels_last' (as used in 
-            keras/tensorflow, pyplot's imshow, etc.)
+            keras/tensorflow, pyplot's imshow, etc.), 0 by default.
         
         Returns:
             Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
@@ -343,6 +353,25 @@ class XISF:
         return np.transpose(im_data, (1, 2, 0)) if data_format == 'channels_last' else im_data
 
 
+    @staticmethod
+    def read(fname, n=0, image_metadata={}, xisf_metadata={}):
+        """Convenience method for reading a file containing a single image. 
+
+        Args:
+            fname (string): filename
+            n (int, optional): index of the image to extract (in the list returned by get_images_metadata()). Defaults to 0.
+            image_metadata (dict, optional): dictionary that will be updated with the metadata of the image.
+            xisf_metadata (dict, optional): dictionary that will be updated with the metadata of the file.
+
+        Returns:
+            [np.ndarray]: Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
+        """
+        xisf = XISF(fname)
+        xisf_metadata.update( xisf.get_file_metadata() )
+        image_metadata.update( xisf.get_images_metadata()[n] )
+        return xisf.read_image(n)
+
+
     # if 'colorSpace' is not specified, im_data.shape[2] dictates if colorSpace is 'Gray' or 'RGB' 
     # For float sample formats, bounds="0:1" is assumed
     @staticmethod
@@ -370,7 +399,7 @@ class XISF:
             data_format = 'channels_first'
             geometry = im_data.shape
             channels = im_data.shape[0]
-        image_attrs['geometry'] = "%d:%d:%d" % (im_data.shape[1], im_data.shape[0], im_data.shape[2])
+        image_attrs['geometry'] = "%d:%d:%d" % geometry
         uncompressed_size = str(im_data.size * im_data.itemsize) # TODO compression size
         image_attrs['location'] = ':'.join( ('attachment', "", uncompressed_size) ) # provisional until we get the data block position
         image_attrs['colorSpace'] = image_attrs.get('colorSpace', 'Gray' if channels == 1 else 'RGB')
