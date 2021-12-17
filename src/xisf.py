@@ -237,7 +237,7 @@ class XISF:
             fits_keywords = {}
             for a in image.findall('xisf:FITSKeyword', self._xml_ns):
                 fits_keywords.setdefault(a.attrib['name'], []).append({
-                    'value': a.attrib['value'],
+                    'value': a.attrib['value'].strip("'").strip(" "),
                     'comment': a.attrib['comment'],
                 })
             image_extended_meta = {
