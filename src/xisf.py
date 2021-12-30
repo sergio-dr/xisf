@@ -268,23 +268,24 @@ class XISF:
     def get_images_metadata(self):
         """Provides the metadata of all image blocks contained in the XISF File, extracted from 
         the header (<Image> core elements). To get the actual image data, see read_image().
-        
-        Returns:
-            list [ m_0, m_1, ..., m_{n-1} ] where m_i is a dict with the metadata of the image i:
-            m_i = { 
-                'geometry': (width, height, channels), # only 2D images (with multiple channels) are supported
-                'location': (pos, size), # used internally in read_image()
-                'dtype': np.dtype('...'), # derived from sampleFormat argument
-                'compression': (codec, uncompressed_size, item_size), # optional
-                'key': 'value', # other <Image> attributes are simply copied 
-                ..., 
-                'FITSKeywords': { 
-                    <key>: [ {'value': <value>, 'comment': <comment> }, ...], 
-                    ... 
-                }, 
-                'XISFProperties': { <key>: value, ... }
-            }
 
+        It outputs a dictionary m_i for each image, with the following structure:
+        ```
+        m_i = { 
+            'geometry': (width, height, channels), # only 2D images (with multiple channels) are supported
+            'location': (pos, size), # used internally in read_image()
+            'dtype': np.dtype('...'), # derived from sampleFormat argument
+            'compression': (codec, uncompressed_size, item_size), # optional
+            'key': 'value', # other <Image> attributes are simply copied 
+            ..., 
+            'FITSKeywords': { <fits_keyword>: [ {'value': <value>, 'comment': <comment> }, ...], ... }, 
+            'XISFProperties': { <xisf_property_name>: value, ... }
+        }
+        ```
+
+        Returns:
+            list [ m_0, m_1, ..., m_{n-1} ] where m_i is a dict as described above.
+ 
         """          
         return self._images_meta
 
