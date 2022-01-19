@@ -436,20 +436,20 @@ class XISF:
         for property_id, value in image_metadata.get('XISFProperties', {}).items():
             try:
                 property_type = XISF._property_types[property_id] # TODO: error handling
+
+                if property_type == 'String':
+                    ET.SubElement(image_xml, 'Property', {
+                        'id': property_id,
+                        'type': property_type
+                    }).text = value
+                else:        
+                    ET.SubElement(image_xml, 'Property', {
+                        'id': property_id,
+                        'type': property_type, 
+                        'value': value
+                    })                
             except KeyError as e:
                 print("Warning: unknown Image property %s" % (property_id,))
-            
-            if property_type == 'String':
-                ET.SubElement(image_xml, 'Property', {
-                    'id': property_id,
-                    'type': property_type
-                }).text = value
-            else:        
-                ET.SubElement(image_xml, 'Property', {
-                    'id': property_id,
-                    'type': property_type, 
-                    'value': value
-                })
 
         # FITSKeywords
         for keyword_name, data in image_metadata.get('FITSKeywords', {}).items():
