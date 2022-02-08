@@ -16,8 +16,8 @@ ims_meta = xisf.get_images_metadata()
 print(f"Filename: {args.input_file}")
 
 print("\n\n__/ File metadata \__________")
-for key, value in file_meta.items():
-    print(f"{key:30s}: {value}")
+for key, prop in file_meta.items():
+    print(f"{key:30s} [{prop['type']:10s}]: {prop['value']}")
 
 pseudokey = "# of images"
 print(f"{pseudokey:30s}: {len(ims_meta)}")
@@ -33,17 +33,19 @@ def crop(text, max=32):
 for i, im_meta in enumerate(ims_meta):
     print(f"\n\n__/ Image #{i} \__________")
 
-    # Simple values
+    # Image attributes
+    key = 'Image attributes'
+    print(f"{key:30s}: ")    
     for key, val in im_meta.items():
         if not isinstance(val, dict):
-            print(f"{key:30s}: {val}")
+            print(f"\t{key:30s}: {val}")
 
     # XISFProperties (dict)
     key = 'XISFProperties'
     print(f"{key:30s}: ")
     xisf_meta = im_meta[key]
-    for xisf_keyw, xisf_val in xisf_meta.items():
-        print(f"\t{xisf_keyw:36s}: {crop(xisf_val)}")
+    for xisf_keyw, xisf_prop in xisf_meta.items():
+        print(f"\t{xisf_keyw:36s} [{xisf_prop['type']:10s}]: {crop(xisf_prop['value'])}")
 
     # FITSKeywords: { '<keyword>': [ {'value': ..., 'comment': ...}, ...], 
     #                 ... },

@@ -124,9 +124,14 @@ m_i = {
     'compression': (codec, uncompressed_size, item_size), # optional
     'key': 'value', # other <Image> attributes are simply copied 
     ..., 
-    'FITSKeywords': { <fits_keyword>: [ {'value': <value>, 'comment': <comment> }, ...], ... }, 
-    'XISFProperties': { <xisf_property_name>: value, ... }
+    'FITSKeywords': { <fits_keyword>: fits_keyword_values_list, ... }, 
+    'XISFProperties': { <xisf_property_name>: property_dict, ... }
 }
+
+where:
+
+fits_keyword_values_list = [ {'value': <value>, 'comment': <comment> }, ...]
+property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': property_value, ...}
 ```
 
 **Returns**:
@@ -145,7 +150,25 @@ Provides the metadata from the header of the XISF File (<Metadata> core elements
 
 **Returns**:
 
-  dict with the properties of the metadata as key-value pairs.
+  dictionary with one entry per property: { <xisf_property_name>: property_dict, ... }
+  where:
+  ```
+  property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': property_value, ...}
+  ```
+
+<a id="xisf.XISF.get_metadata_xml"></a>
+
+#### get\_metadata\_xml
+
+```python
+def get_metadata_xml()
+```
+
+Returns the complete XML header as a xml.etree.ElementTree.Element object.
+
+**Returns**:
+
+- `xml.etree.ElementTree.Element` - complete XML XISF header
 
 <a id="xisf.XISF.read_image"></a>
 

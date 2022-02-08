@@ -89,85 +89,6 @@ class XISF:
     _signature = b'XISF0100' # Monolithic
     _headerlength_len = 4
     _reserved_len = 4
-    _property_types = {
-        "XISF:CreationTime": "TimePoint",
-        "XISF:CreatorApplication": "String",
-        "XISF:Abstract": "String",
-        "XISF:AccessRights": "String",
-        "XISF:Authors": "String",
-        "XISF:BibliographicReferences": "String",
-        "XISF:BriefDescription": "String",
-        "XISF:CompressionLevel": "Int32",
-        "XISF:CompressionCodecs": "String",
-        "XISF:Contributors": "String",
-        "XISF:Copyright": "String",
-        "XISF:CreatorModule": "String",
-        "XISF:CreatorOS": "String",
-        "XISF:Description": "String",
-        "XISF:Keywords": "String",
-        "XISF:Languages": "String",
-        "XISF:License": "String",
-        "XISF:OriginalCreationTime": "TimePoint",
-        "XISF:RelatedResources": "String",
-        "XISF:Title": "String",
-        "Observer:EmailAddress": "String",
-        "Observer:Name": "String",
-        "Observer:PostalAddress": "String",
-        "Observer:Website": "String",
-        "Organization:EmailAddress": "String",
-        "Organization:Name": "String",
-        "Organization:PostalAddress": "String",
-        "Organization:Website": "String",
-        "Observation:CelestialReferenceSystem": "String",
-        "Observation:BibliographicReferences": "String",
-        "Observation:Center:Dec": "Float64",
-        "Observation:Center:RA": "Float64",
-        "Observation:Center:X": "Float64",
-        "Observation:Center:Y": "Float64",
-        "Observation:Description": "String",
-        "Observation:Equinox": "Float64",
-        "Observation:GeodeticReferenceSystem": "String",
-        "Observation:Location:Elevation": "Float64",
-        "Observation:Location:Latitude": "Float64",
-        "Observation:Location:Longitude": "Float64",
-        "Observation:Location:Name": "String",
-        "Observation:Meteorology:AmbientTemperature": "Float32",
-        "Observation:Meteorology:AtmosphericPressure": "Float32",
-        "Observation:Meteorology:RelativeHumidity": "Float32",
-        "Observation:Meteorology:WindDirection": "Float32",
-        "Observation:Meteorology:WindGust": "Float32",
-        "Observation:Meteorology:WindSpeed": "Float32",
-        "Observation:Object:Dec": "Float64",
-        "Observation:Object:Name": "String",
-        "Observation:Object:RA": "Float64",
-        "Observation:RelatedResources": "String",
-        "Observation:Time:End": "TimePoint",
-        "Observation:Time:Start": "TimePoint",
-        "Observation:Title": "String",
-        "Instrument:Camera:Gain": "Float32",
-        "Instrument:Camera:ISOSpeed": "Int32",
-        "Instrument:Camera:Name": "String",
-        "Instrument:Camera:ReadoutNoise": "Float32",
-        "Instrument:Camera:Rotation": "Float32",
-        "Instrument:Camera:XBinning": "Int32",
-        "Instrument:Camera:YBinning": "Int32",
-        "Instrument:ExposureTime": "Float32",
-        "Instrument:Filter:Name": "String",
-        "Instrument:Focuser:Position": "Float32",
-        "Instrument:Sensor:TargetTemperature": "Float32",
-        "Instrument:Sensor:Temperature": "Float32",
-        "Instrument:Sensor:XPixelSize": "Float32",
-        "Instrument:Sensor:YPixelSize": "Float32",
-        "Instrument:Telescope:Aperture": "Float32",
-        "Instrument:Telescope:CollectingArea": "Float32",
-        "Instrument:Telescope:FocalLength": "Float32",
-        "Instrument:Telescope:Name": "String",
-        "Image:FrameNumber": "UInt32",
-        "Image:GroupId": "String",
-        "Image:SubgroupId": "String",
-        "Processing:Description": "String",
-        "Processing:History": "String"
-    }
     _xml_ns = { 'xisf': "http://www.pixinsight.com/xisf" }    
     _xisf_attrs = {
         'xmlns': "http://www.pixinsight.com/xisf",
@@ -220,33 +141,35 @@ class XISF:
             self._xisf_header_xml = ET.fromstring(self._xisf_header)
         self._analyze_header()
 
+
     def _analyze_header(self):
         # Analyze header to get Data Blocks position and length
         self._images_meta = []
         for image in self._xisf_header_xml.findall('xisf:Image', self._xml_ns):
             image_basic_meta = image.attrib
+
             # Parse and replace geometry and location with tuples, 
             # parses and translates sampleFormat to numpy dtypes, 
             # and extend with metadata from children entities (FITSKeywords, XISFProperties)
-            # TODO: Resolution, ICCProfile, Thumbnail, ...
             
-            # The same FITS keyword can appear multiple times, so we have to 
-            # prepare a dict of lists. Each element in the list is a dict
-            # that hold the value and the comment associated with the keyword.
-            # Not as clear as I would like. 
+            #   The same FITS keyword can appear multiple times, so we have to 
+            #   prepare a dict of lists. Each element in the list is a dict
+            #   that hold the value and the comment associated with the keyword.
+            #   Not as clear as I would like. 
             fits_keywords = {}
             for a in image.findall('xisf:FITSKeyword', self._xml_ns):
                 fits_keywords.setdefault(a.attrib['name'], []).append({
                     'value': a.attrib['value'].strip("'").strip(" "),
                     'comment': a.attrib['comment'],
                 })
+
             image_extended_meta = {
                 'geometry': self._parse_geometry(image.attrib['geometry']),
                 'location': self._parse_location(image.attrib['location']), 
                 'dtype': self._parse_sampleFormat(image.attrib['sampleFormat']), 
                 'FITSKeywords': fits_keywords,
-                'XISFProperties': {a.attrib['id']: a.attrib.get('value', a.text) 
-                    for a in image.findall('xisf:Property', self._xml_ns)
+                'XISFProperties': { p.attrib['id']: self._process_property(p)
+                    for p in image.findall('xisf:Property', self._xml_ns)
                 }
             }
             # Also parses compression attribute if present, converting it to a tuple
@@ -262,7 +185,15 @@ class XISF:
         # Analyze header for file metadata
         self._file_meta = {}
         for p in self._xisf_header_xml.find('xisf:Metadata', self._xml_ns):
-            self._file_meta[p.attrib['id']] = p.attrib.get('value', p.text)
+            self._file_meta[p.attrib['id']] = self._process_property(p)
+
+        # TODO: rest of XISF core elements: Resolution, ICCProfile, Thumbnail, ...
+
+
+    @staticmethod
+    def _process_property(p):
+        # TODO: map XISF types to python types
+        return {**p.attrib, 'value': p.text} if p.text else p.attrib
 
 
     def get_images_metadata(self):
@@ -278,9 +209,14 @@ class XISF:
             'compression': (codec, uncompressed_size, item_size), # optional
             'key': 'value', # other <Image> attributes are simply copied 
             ..., 
-            'FITSKeywords': { <fits_keyword>: [ {'value': <value>, 'comment': <comment> }, ...], ... }, 
-            'XISFProperties': { <xisf_property_name>: value, ... }
+            'FITSKeywords': { <fits_keyword>: fits_keyword_values_list, ... }, 
+            'XISFProperties': { <xisf_property_name>: property_dict, ... }
         }
+
+        where:
+
+        fits_keyword_values_list = [ {'value': <value>, 'comment': <comment> }, ...]
+        property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': property_value, ...}
         ```
 
         Returns:
@@ -294,10 +230,23 @@ class XISF:
         """Provides the metadata from the header of the XISF File (<Metadata> core elements).
         
         Returns:
-            dict with the properties of the metadata as key-value pairs.
+            dictionary with one entry per property: { <xisf_property_name>: property_dict, ... }
+            where:
+            ```
+            property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': property_value, ...}
+            ```
 
         """          
         return self._file_meta
+
+
+    def get_metadata_xml(self):
+        """Returns the complete XML header as a xml.etree.ElementTree.Element object.
+
+        Returns:
+            xml.etree.ElementTree.Element: complete XML XISF header
+        """
+        return self._xisf_header_xml
 
 
     def read_image(self, n=0, data_format='channels_last'):
@@ -415,45 +364,60 @@ class XISF:
         # TODO: compression
 
         # Create file metadata
-        xisf_metadata['XISF:CreationTime'] = datetime.utcnow().isoformat()
-        xisf_metadata['XISF:CreatorApplication'] = "Python"
-        xisf_metadata['XISF:CreatorModule'] = "XISF Python Module"
+        xisf_metadata['XISF:CreationTime'] = {
+            'id': 'XISF:CreationTime',
+            'type': 'String',
+            'value': datetime.utcnow().isoformat()
+        }
+        xisf_metadata['XISF:CreatorApplication'] = {
+            'id': 'XISF:CreatorApplication',
+            'type': 'String',
+            'value': "Python"
+        }
+        xisf_metadata['XISF:CreatorModule'] = {
+            'id': 'XISF:CreatorModule',
+            'type': 'String',
+            'value': "XISF Python Module"
+        }
         _OSes = {
             'linux': 'Linux',
             'win32': 'Windows',
             'cygwin': 'Windows',
             'darwin': 'macOS'
         }
-        xisf_metadata['XISF:CreatorOS'] = _OSes[sys.platform]
+        xisf_metadata['XISF:CreatorOS'] = {
+            'id': 'XISF:CreatorOS',
+            'type': 'String',
+            'value': _OSes[sys.platform]
+        }
         # TODO: compression
 
 
         # Convert metadata (dict) to XML Header
         xisf_header_xml = ET.Element('xisf', XISF._xisf_attrs)
 
+        # Image
         image_xml = ET.SubElement(xisf_header_xml, 'Image', image_attrs)
-        # XISFProperties
-        for property_id, value in image_metadata.get('XISFProperties', {}).items():
-            try:
-                property_type = XISF._property_types[property_id] # TODO: error handling
-            except KeyError as e:
-                print(f"Warning: unknown Image property '{property_id}', treating as String type.")
-                property_type = 'String'
 
-            if property_type == 'String':
-                ET.SubElement(image_xml, 'Property', {
-                    'id': property_id,
-                    'type': property_type
-                }).text = value
-            else:        
-                ET.SubElement(image_xml, 'Property', {
-                    'id': property_id,
-                    'type': property_type, 
-                    'value': value
-                })                
+        # Auxiliary function to insert XISF properties in the XML tree
+        def _insert_property(parent, property_dict):
+            if property_dict['type'] == 'String':
+                ET.SubElement(parent, 'Property', {
+                    'id': property_dict['id'],
+                    'type': property_dict['type'],
+                }).text = property_dict['value']
+            else:
+                ET.SubElement(parent, 'Property', {
+                    'id': property_dict['id'],
+                    'type': property_dict['type'], 
+                    'value': property_dict['value']
+                })   
 
+        #   Image XISFProperties
+        for property_dict in image_metadata.get('XISFProperties', {}).values():
+            _insert_property(image_xml, property_dict)
 
-        # FITSKeywords
+        #   Image FITSKeywords
         for keyword_name, data in image_metadata.get('FITSKeywords', {}).items():
             for entry in data:
                 ET.SubElement(image_xml, 'FITSKeyword', {
@@ -462,25 +426,11 @@ class XISF:
                     'comment': entry['comment']
                 })
 
-
+        # File Metadata
         metadata_xml = ET.SubElement(xisf_header_xml, 'Metadata')
-        for property_id, value in xisf_metadata.items():
-            try:
-                property_type = XISF._property_types[property_id] # TODO: error handling
-            except KeyError as e:
-                print("Warning: unknown Metadata property %s" % (property_id,))
+        for property_dict in xisf_metadata.values():
+            _insert_property(metadata_xml, property_dict)
 
-            if property_type == 'String':
-                ET.SubElement(metadata_xml, 'Property', {
-                    'id': property_id,
-                    'type': property_type,
-                }).text = value
-            else:
-                ET.SubElement(metadata_xml, 'Property', {
-                    'id': property_id,
-                    'type': property_type, 
-                    'value': value
-                })
 
         # Headers combined length without attachment position in XML header
         provisional_xisf_header = ET.tostring(xisf_header_xml, encoding='utf8')
@@ -492,8 +442,10 @@ class XISF:
         # Update data block position in XML Header
         image_attrs['location'] = ':'.join( ('attachment', str(data_block_pos), uncompressed_size) ) # TODO: compressed size
         image_xml.set('location', image_attrs['location'])
-
+        
         with open(fname, "wb") as f:
+            import os
+            print(os.path.realpath(f.name))
             # Write XISF signature
             f.write(XISF._signature)
 
