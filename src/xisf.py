@@ -5,7 +5,7 @@
 
 This implementation is not endorsed nor related with PixInsight development team.
 
-Copyright (C) 2021 Sergio Díaz, sergiodiaz.eu
+Copyright (C) 2021-2022 Sergio Díaz, sergiodiaz.eu
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -20,6 +20,9 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+__version__ = 0.9 # see also setup.cfg in https://packaging.python.org/en/latest/guides/single-sourcing-package-version/
+
+import platform
 import xml.etree.ElementTree as ET
 import numpy as np
 import lz4.block # https://python-lz4.readthedocs.io/en/stable/lz4.block.html
@@ -59,33 +62,39 @@ class XISF:
 
     Usage example:
     ```
-    >>> from xisf import XISF
-    >>> import matplotlib.pyplot as plt
-    >>> xisf = XISF("file.xisf")
-    >>> file_meta = xisf.get_file_metadata()    
-    >>> file_meta
-    >>> ims_meta = xisf.get_images_metadata()
-    >>> ims_meta
-    >>> im_data = xisf.read_image(0)
-    >>> plt.imshow(im_data)
-    >>> plt.show()
-    >>> XISF.write("output.xisf", im_data, ims_meta[0], file_meta)
+    from xisf import XISF
+    import matplotlib.pyplot as plt
+    xisf = XISF("file.xisf")
+    file_meta = xisf.get_file_metadata()    
+    file_meta
+    ims_meta = xisf.get_images_metadata()
+    ims_meta
+    im_data = xisf.read_image(0)
+    plt.imshow(im_data)
+    plt.show()
+    XISF.write(
+        "output.xisf", im_data, 
+        creator_app="My script v1.0", image_metadata=ims_meta[0], xisf_metadata=file_meta, 
+        codec='lz4hc', shuffle=True
+    )
     ```
 
     If the file is not huge and it contains only an image (or you're interested just in one of the 
     images inside the file), there is a convenience method for reading the data and the metadata:
     ```
-    >>> from xisf import XISF
-    >>> import matplotlib.pyplot as plt    
-    >>> im_data = XISF.read("file.xisf")
-    >>> plt.imshow(im_data)
-    >>> plt.show()
+    from xisf import XISF
+    import matplotlib.pyplot as plt    
+    im_data = XISF.read("file.xisf")
+    plt.imshow(im_data)
+    plt.show()
     ```
 
     The XISF format specification is available at https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html
     """
 
     # Static attributes
+    _creator_app = f"Python {platform.python_version()}"
+    _creator_module = f"XISF Python Module v{__version__} github.com/sergio-dr/xisf"
     _signature = b'XISF0100' # Monolithic
     _headerlength_len = 4
     _reserved_len = 4
@@ -96,7 +105,11 @@ class XISF:
         'version': "1.0",
         'xsi:schemaLocation': "http://www.pixinsight.com/xisf http://pixinsight.com/xisf/xisf-1.0.xsd"
     }
-
+    _compression_def_level = {
+        'zlib':  6, # 1..9, default: 6 as indicated in https://docs.python.org/3/library/zlib.html
+        'lz4':   0, # no other values, as indicated in https://python-lz4.readthedocs.io/en/stable/lz4.block.html
+        'lz4hc': 9  # 1..12, (4-9 recommended), default: 9 as indicated in https://python-lz4.readthedocs.io/en/stable/lz4.block.html
+    }
 
     def __init__(self, fname):
         """Opens a XISF file and extract its metadata. To get the metadata and the images, see get_file_metadata(), 
@@ -328,18 +341,25 @@ class XISF:
     # if 'colorSpace' is not specified, im_data.shape[2] dictates if colorSpace is 'Gray' or 'RGB' 
     # For float sample formats, bounds="0:1" is assumed
     @staticmethod
-    def write(fname, im_data, image_metadata={}, xisf_metadata={}):
-        """Writes an image (numpy array) to a XISF file.
+    def write(fname, im_data, creator_app=None, image_metadata={}, xisf_metadata={}, codec=None, shuffle=False, level=None):
+        """Writes an image (numpy array) to a XISF file. Compression may be requested but it only
+        will be used if it actually reduces the data size.
 
         Args:
             fname: filename (will overwrite if existing)
             im_data: numpy ndarray with the image data
+            creator_app: string for XISF:CreatorApplication file property (defaults to python version in None provided)
             image_metadata: dict with the same structure described for m_i in get_images_metadata(). 
               Only 'FITSKeywords' and 'XISFProperties' keys are actually written, the rest are derived from im_data.
-            xisf_metadata: dict with the same structure returned by get_file_metadata()
-        
+            xisf_metadata: file metadata, dict with the same structure returned by get_file_metadata()
+            codec: compression codec ('zlib', 'lz4' or 'lz4hc'), or None to disable compression
+            shuffle: whether to apply byte-shuffling before compression (ignored if codec is None). Recommended 
+              for 'lz4' and 'lz4hc' compression algorithms.         
+            level: for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9). Higher means more compression.
         Returns:
-            Nothing
+            bytes_written: the total number of bytes written into the output file. 
+            codec: The codec actually used, i.e., None if compression did not reduce the data block size so
+            compression was not finally used.  
 
         """          
         # Update Image metadata
@@ -353,15 +373,78 @@ class XISF:
             geometry = im_data.shape
             channels = im_data.shape[0]
         image_attrs['geometry'] = "%d:%d:%d" % geometry
-        uncompressed_size = str(im_data.size * im_data.itemsize) # TODO compression size
-        image_attrs['location'] = ':'.join( ('attachment', "", uncompressed_size) ) # provisional until we get the data block position
         image_attrs['colorSpace'] = image_attrs.get('colorSpace', 'Gray' if channels == 1 else 'RGB')
         image_attrs['sampleFormat'] = XISF._get_sampleFormat(im_data.dtype)
         if image_attrs['sampleFormat'].startswith("Float"):
             image_attrs['bounds'] = "0:1" # Assumed
         if sys.byteorder == 'big' and image_attrs['sampleFormat'] != 'UInt8':
             image_attrs['byteOrder'] = 'big'
-        # TODO: compression
+
+
+        # Rearrange for data_format
+        data_block = np.transpose(im_data, (2, 0, 1)) if data_format == 'channels_last' else im_data
+        data_block = data_block.tobytes()
+
+        uncompressed_size = im_data.size * im_data.itemsize
+
+        # Compression
+        if codec is None:
+            data_size = uncompressed_size
+        else:
+            if shuffle:
+                compressed_block = XISF._shuffle(data_block, im_data.itemsize)
+                codec_str = codec + "+sh"
+            else:
+                compressed_block = data_block
+          
+            if codec == 'lz4hc':
+                level = level if level else XISF._compression_def_level['lz4hc']
+                compressed_block = lz4.block.compress(
+                    compressed_block, 
+                    mode='high_compression', 
+                    compression=level, 
+                    store_size=False
+                ) 
+            elif codec == 'lz4':
+                compressed_block = lz4.block.compress(compressed_block, store_size=False) 
+            elif codec == 'zlib':
+                level = level if level else XISF._compression_def_level['zlib']
+                compressed_block = zlib.compress(compressed_block, level=level)
+            else:
+                raise NotImplementedError("Unimplemented compression codec %s" % (codec,))        
+
+            compressed_size = len(compressed_block)
+
+            if compressed_size < uncompressed_size:
+                # The ideal situation, compressing actually reduces size
+                data_block, data_size = compressed_block, compressed_size
+
+                # Add 'compression' image attribute: (codec:uncompressed-size[:item-size])
+                image_attrs['compression'] = f"{codec_str}:{uncompressed_size}:{im_data.itemsize}" if shuffle else f"{codec_str}:{uncompressed_size}"
+
+                # Add XISF:CompressionCodecs and XISF:CompressionLevel to file metadata
+                xisf_metadata['XISF:CompressionCodecs'] = {
+                    'id': 'XISF:CompressionCodecs',
+                    'type': 'String',
+                    'value': codec
+                }
+                xisf_metadata['XISF:CompressionLevel'] = {
+                    'id': 'XISF:CompressionLevel',
+                    'type': 'Int',
+                    'value': level if level else XISF._compression_def_level[codec]
+                }                  
+            else:
+                # If there's no gain in compressing,, just discard the compressed block
+                # See https://pixinsight.com/forum.old/index.php?topic=10942.msg68043#msg68043
+                # (In fact, PixInsight will show garbage image data if the data block is 
+                # compressed but the uncompressed size is smaller)
+                codec = None
+                data_size = uncompressed_size
+
+
+        # Assemble location attribute, provisional until we get the data block position
+        image_attrs['location'] = ':'.join( ('attachment', "", str(data_size)) ) 
+
 
         # Create file metadata
         xisf_metadata['XISF:CreationTime'] = {
@@ -372,12 +455,12 @@ class XISF:
         xisf_metadata['XISF:CreatorApplication'] = {
             'id': 'XISF:CreatorApplication',
             'type': 'String',
-            'value': "Python"
+            'value': creator_app if creator_app else XISF._creator_app
         }
         xisf_metadata['XISF:CreatorModule'] = {
             'id': 'XISF:CreatorModule',
             'type': 'String',
-            'value': "XISF Python Module"
+            'value': XISF._creator_module
         }
         _OSes = {
             'linux': 'Linux',
@@ -390,7 +473,6 @@ class XISF:
             'type': 'String',
             'value': _OSes[sys.platform]
         }
-        # TODO: compression
 
 
         # Convert metadata (dict) to XML Header
@@ -405,12 +487,12 @@ class XISF:
                 ET.SubElement(parent, 'Property', {
                     'id': property_dict['id'],
                     'type': property_dict['type'],
-                }).text = property_dict['value']
+                }).text = str(property_dict['value'])
             else:
                 ET.SubElement(parent, 'Property', {
                     'id': property_dict['id'],
                     'type': property_dict['type'], 
-                    'value': property_dict['value']
+                    'value': str(property_dict['value'])
                 })   
 
         #   Image XISFProperties
@@ -440,12 +522,10 @@ class XISF:
         # Definitive data block position
         data_block_pos = len_wo_pos + len(str(provisional_pos))
         # Update data block position in XML Header
-        image_attrs['location'] = ':'.join( ('attachment', str(data_block_pos), uncompressed_size) ) # TODO: compressed size
+        image_attrs['location'] = ':'.join( ('attachment', str(data_block_pos), str(data_size)) ) 
         image_xml.set('location', image_attrs['location'])
         
         with open(fname, "wb") as f:
-            import os
-            print(os.path.realpath(f.name))
             # Write XISF signature
             f.write(XISF._signature)
 
@@ -463,8 +543,10 @@ class XISF:
 
             # Write data block
             assert(data_block_pos == f.tell())
-            data_block = np.transpose(im_data, (2, 0, 1)) if data_format == 'channels_last' else im_data
-            data_block.tofile(f)
+            f.write(data_block)
+            bytes_written = f.tell()
+
+        return bytes_written, codec
 
 
     # Auxiliary functions to parse some metadata attributes
@@ -533,3 +615,11 @@ class XISF:
         a = np.frombuffer(d, dtype=np.dtype('uint8'))
         a = a.reshape((item_size, -1))
         return np.transpose(a).tobytes()        
+
+
+    # Auxiliary function to implement byteshuffling with numpy
+    @staticmethod
+    def _shuffle(d, item_size):
+        a = np.frombuffer(d, dtype=np.dtype('uint8'))
+        a = a.reshape((-1, item_size))
+        return np.transpose(a).tobytes()         

@@ -6,7 +6,7 @@
 
 This implementation is not endorsed nor related with PixInsight development team.
 
-Copyright (C) 2021 Sergio Díaz, sergiodiaz.eu
+Copyright (C) 2021-2022 Sergio Díaz, sergiodiaz.eu
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -58,27 +58,31 @@ What's not supported (at least by now):
 
 Usage example:
 ```
->>> from xisf import XISF
->>> import matplotlib.pyplot as plt
->>> xisf = XISF("file.xisf")
->>> file_meta = xisf.get_file_metadata()    
->>> file_meta
->>> ims_meta = xisf.get_images_metadata()
->>> ims_meta
->>> im_data = xisf.read_image(0)
->>> plt.imshow(im_data)
->>> plt.show()
->>> XISF.write("output.xisf", im_data, ims_meta[0], file_meta)
+from xisf import XISF
+import matplotlib.pyplot as plt
+xisf = XISF("file.xisf")
+file_meta = xisf.get_file_metadata()    
+file_meta
+ims_meta = xisf.get_images_metadata()
+ims_meta
+im_data = xisf.read_image(0)
+plt.imshow(im_data)
+plt.show()
+XISF.write(
+    "output.xisf", im_data, 
+    creator_app="My script v1.0", image_metadata=ims_meta[0], xisf_metadata=file_meta, 
+    codec='lz4hc', shuffle=True
+)
 ```
 
 If the file is not huge and it contains only an image (or you're interested just in one of the 
 images inside the file), there is a convenience method for reading the data and the metadata:
 ```
->>> from xisf import XISF
->>> import matplotlib.pyplot as plt    
->>> im_data = XISF.read("file.xisf")
->>> plt.imshow(im_data)
->>> plt.show()
+from xisf import XISF
+import matplotlib.pyplot as plt    
+im_data = XISF.read("file.xisf")
+plt.imshow(im_data)
+plt.show()
 ```
 
 The XISF format specification is available at https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html
@@ -220,21 +224,28 @@ Convenience method for reading a file containing a single image.
 
 ```python
 @staticmethod
-def write(fname, im_data, image_metadata={}, xisf_metadata={})
+def write(fname, im_data, creator_app=None, image_metadata={}, xisf_metadata={}, codec=None, shuffle=False, level=None)
 ```
 
-Writes an image (numpy array) to a XISF file.
+Writes an image (numpy array) to a XISF file. Compression may be requested but it only
+will be used if it actually reduces the data size.
 
 **Arguments**:
 
 - `fname` - filename (will overwrite if existing)
 - `im_data` - numpy ndarray with the image data
+- `creator_app` - string for XISF:CreatorApplication file property (defaults to python version in None provided)
 - `image_metadata` - dict with the same structure described for m_i in get_images_metadata().
   Only 'FITSKeywords' and 'XISFProperties' keys are actually written, the rest are derived from im_data.
-- `xisf_metadata` - dict with the same structure returned by get_file_metadata()
-  
+- `xisf_metadata` - file metadata, dict with the same structure returned by get_file_metadata()
+- `codec` - compression codec ('zlib', 'lz4' or 'lz4hc'), or None to disable compression
+- `shuffle` - whether to apply byte-shuffling before compression (ignored if codec is None). Recommended
+  for 'lz4' and 'lz4hc' compression algorithms.
+- `level` - for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9). Higher means more compression.
 
 **Returns**:
 
-  Nothing
+- `bytes_written` - the total number of bytes written into the output file.
+- `codec` - The codec actually used, i.e., None if compression did not reduce the data block size so
+  compression was not finally used.
 

@@ -3,59 +3,87 @@
 
 from xisf import XISF
 import argparse
+import xml.etree.ElementTree as ET
 
-help_desc = "Command line tool for printing XISF metadata"
+
+# In python 3.9+, use ET.indent(...) instead of these:
+#   https://stackoverflow.com/a/65808327
+def _pretty_print(current, parent=None, index=-1, depth=0):
+    tab = "  "
+    for i, node in enumerate(current):
+        _pretty_print(node, current, i, depth + 1)
+    if parent is not None:
+        if index == 0:
+            parent.text = '\n' + (tab * depth)
+        else:
+            parent[index - 1].tail = '\n' + (tab * depth)
+        if index == len(parent) - 1:
+            current.tail = '\n' + (tab * (depth - 1))
+
+def prettify(etree):
+    _pretty_print(etree)
+    return ET.dump(etree)
+
+
+
+help_desc = f"Command line tool for printing XISF metadata. Based on {XISF._creator_module}."
 parser = argparse.ArgumentParser(description=help_desc)
 parser.add_argument("input_file", help="Input filename (XISF format)")
+parser.add_argument("-x", "--xml", action='store_true', help="Outputs pretty-printed XML header")
 args = parser.parse_args()
 
 xisf = XISF(args.input_file)
-file_meta = xisf.get_file_metadata()    
-ims_meta = xisf.get_images_metadata()
 
-print(f"Filename: {args.input_file}")
+if args.xml:
+    print(prettify(xisf.get_metadata_xml()))
+else:
+    file_meta = xisf.get_file_metadata()    
+    ims_meta = xisf.get_images_metadata()
 
-print("\n\n__/ File metadata \__________")
-for key, prop in file_meta.items():
-    print(f"{key:30s} [{prop['type']:10s}]: {prop['value']}")
-
-pseudokey = "# of images"
-print(f"{pseudokey:30s}: {len(ims_meta)}")
+    print(f"Filename: {args.input_file}")
 
 
-def crop(text, max=32):
-    if len(text) > max:
-        return f"{text[:max]} [...]"
-    else:
-        return text
+    print("\n\n__/ File metadata \__________")
+    for key, prop in file_meta.items():
+        print(f"{key:30s} [{prop['type']:10s}]: {prop['value']}")
+
+    pseudokey = "(# of images)"
+    print(f"{pseudokey:43s}: {len(ims_meta)}")
 
 
-for i, im_meta in enumerate(ims_meta):
-    print(f"\n\n__/ Image #{i} \__________")
-
-    # Image attributes
-    key = 'Image attributes'
-    print(f"{key:30s}: ")    
-    for key, val in im_meta.items():
-        if not isinstance(val, dict):
-            print(f"\t{key:30s}: {val}")
-
-    # XISFProperties (dict)
-    key = 'XISFProperties'
-    print(f"{key:30s}: ")
-    xisf_meta = im_meta[key]
-    for xisf_keyw, xisf_prop in xisf_meta.items():
-        print(f"\t{xisf_keyw:36s} [{xisf_prop['type']:10s}]: {crop(xisf_prop['value'])}")
-
-    # FITSKeywords: { '<keyword>': [ {'value': ..., 'comment': ...}, ...], 
-    #                 ... },
-    key = 'FITSKeywords'
-    print(f"{key:30s}: ")
-    fits_meta = im_meta[key]
-    for j, (fits_keyw, fits_val) in enumerate(fits_meta.items()):
-        if len(fits_val) == 1:
-            print(f"\t{fits_keyw:14s}: {fits_val[0]['value']} [{fits_val[0].get('comment', '-')}]")
+    def crop(text, max=32):
+        if len(text) > max:
+            return f"{text[:max]} [...]"
         else:
-            for k, fits_val_k in enumerate(fits_val):
-                key = f"{fits_keyw}[{k:4d}]"
-                print(f"\t{key:14s}: {fits_val_k['value']} [{fits_val_k.get('comment', '-')}]")
+            return text
+
+
+    for i, im_meta in enumerate(ims_meta):
+        print(f"\n\n__/ Image #{i} \__________")
+
+        # Image attributes
+        key = 'Image attributes'
+        print(f"{key:30s}: ")    
+        for key, val in im_meta.items():
+            if not isinstance(val, dict):
+                print(f"\t{key:30s}: {val}")
+
+        # XISFProperties (dict)
+        key = 'XISFProperties'
+        print(f"{key:30s}: ")
+        xisf_meta = im_meta[key]
+        for xisf_keyw, xisf_prop in xisf_meta.items():
+            print(f"\t{xisf_keyw:36s} [{xisf_prop['type']:10s}]: {crop(xisf_prop['value'])}")
+
+        # FITSKeywords: { '<keyword>': [ {'value': ..., 'comment': ...}, ...], 
+        #                 ... },
+        key = 'FITSKeywords'
+        print(f"{key:30s}: ")
+        fits_meta = im_meta[key]
+        for j, (fits_keyw, fits_val) in enumerate(fits_meta.items()):
+            if len(fits_val) == 1:
+                print(f"\t{fits_keyw:14s}: {fits_val[0]['value']} [{fits_val[0].get('comment', '-')}]")
+            else:
+                for k, fits_val_k in enumerate(fits_val):
+                    key = f"{fits_keyw}[{k:4d}]"
+                    print(f"\t{key:14s}: {fits_val_k['value']} [{fits_val_k.get('comment', '-')}]")
