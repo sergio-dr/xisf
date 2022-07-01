@@ -20,7 +20,7 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-__version__ = 0.9 # see also setup.cfg in https://packaging.python.org/en/latest/guides/single-sourcing-package-version/
+__version__ = "0.9.0"  # See pyproject.toml
 
 import platform
 import xml.etree.ElementTree as ET

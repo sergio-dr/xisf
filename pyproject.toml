@@ -1,6 +1,30 @@
 [build-system]
-requires = [
-    "setuptools>=42",
-    "wheel"
-]
+requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "xisf"
+description = "Encoder/Decoder for XISF (Extensible Image Serialization Format)"
+readme = "README.md"
+authors = [{ name = "Sergio Díaz", email = "sergio.diaz.ruiz@gmail.com" }]
+requires-python = ">=3.6"
+keywords = ["astronomy", "XISF"]
+license = {text = "GNU General Public License v3 (GPLv3)"}
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy",
+    "lz4",
+]
+dynamic = ["version"]
+
+[tool.setuptools.dynamic]
+version = {attr = "xisf.__version__"}
+
+[project.urls]
+Homepage = "https://github.com/sergio-dr/xisf"
