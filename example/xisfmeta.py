@@ -5,24 +5,25 @@ from xisf import XISF
 import argparse
 import xml.etree.ElementTree as ET
 
+TAB = " "*4
+
 
 # In python 3.9+, use ET.indent(...) instead of these:
 #   https://stackoverflow.com/a/65808327
 def _pretty_print(current, parent=None, index=-1, depth=0):
-    tab = "  "
     for i, node in enumerate(current):
         _pretty_print(node, current, i, depth + 1)
     if parent is not None:
         if index == 0:
-            parent.text = '\n' + (tab * depth)
+            parent.text = '\n' + (TAB * depth)
         else:
-            parent[index - 1].tail = '\n' + (tab * depth)
+            parent[index - 1].tail = '\n' + (TAB * depth)
         if index == len(parent) - 1:
-            current.tail = '\n' + (tab * (depth - 1))
+            current.tail = '\n' + (TAB * (depth - 1))
 
-def prettify(etree):
-    _pretty_print(etree)
-    return ET.dump(etree)
+def prettify(etree, depth=0):
+    _pretty_print(etree, depth=depth)
+    return TAB*depth + ET.tostring(etree, encoding='unicode', xml_declaration=True)
 
 
 
@@ -51,10 +52,20 @@ else:
     print(f"{pseudokey:43s}: {len(ims_meta)}")
 
 
-    def crop(text, max=32):
-        if len(text) > max:
-            return f"{text[:max]} [...]"
+    def render(text, width=40):
+        if len(text) > width:
+            # Print indented text starting the next line
+            if text.startswith("<?xml"):
+                return "\n" + prettify(ET.fromstring(text), depth=2)
+            else:
+                indented = "\n"
+                wide = 80
+                for line in text.splitlines(True):
+                    for i in range(0, len(line), wide):
+                        indented += TAB*2 + line[i:i+wide] + "\n"
+                return indented
         else:
+            # Short text, print on the same line
             return text
 
 
@@ -66,14 +77,14 @@ else:
         print(f"{key:30s}: ")    
         for key, val in im_meta.items():
             if not isinstance(val, dict):
-                print(f"\t{key:30s}: {val}")
+                print(f"{TAB}{key:30s}: {val}")
 
         # XISFProperties (dict)
         key = 'XISFProperties'
         print(f"{key:30s}: ")
         xisf_meta = im_meta[key]
         for xisf_keyw, xisf_prop in xisf_meta.items():
-            print(f"\t{xisf_keyw:36s} [{xisf_prop['type']:10s}]: {crop(xisf_prop['value'])}")
+            print(f"{TAB}{xisf_keyw:36s} [{xisf_prop['type']:10s}]: {render(xisf_prop['value'])}")
 
         # FITSKeywords: { '<keyword>': [ {'value': ..., 'comment': ...}, ...], 
         #                 ... },
@@ -82,8 +93,8 @@ else:
         fits_meta = im_meta[key]
         for j, (fits_keyw, fits_val) in enumerate(fits_meta.items()):
             if len(fits_val) == 1:
-                print(f"\t{fits_keyw:14s}: {fits_val[0]['value']} [{fits_val[0].get('comment', '-')}]")
+                print(f"{TAB}{fits_keyw:14s}: {fits_val[0]['value']} [{fits_val[0].get('comment', '-')}]")
             else:
                 for k, fits_val_k in enumerate(fits_val):
                     key = f"{fits_keyw}[{k:4d}]"
-                    print(f"\t{key:14s}: {fits_val_k['value']} [{fits_val_k.get('comment', '-')}]")
+                    print(f"{TAB}{key:14s}: {fits_val_k['value']} [{fits_val_k.get('comment', '-')}]")

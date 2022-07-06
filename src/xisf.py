@@ -20,26 +20,28 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-__version__ = "0.9.0"  # See pyproject.toml
+__version__ = "0.9.1"  # See pyproject.toml
 
 import platform
 import xml.etree.ElementTree as ET
 import numpy as np
 import lz4.block # https://python-lz4.readthedocs.io/en/stable/lz4.block.html
 import zlib # https://docs.python.org/3/library/zlib.html
+import base64
 import sys
 from datetime import datetime
+import ast
+
 
 
 class XISF:
-    """Implements an *incomplete* (attached images only) baseline XISF Decoder and a simple baseline Encoder. 
+    """Implements an baseline XISF Decoder and a simple baseline Encoder. 
     It parses metadata from Image and Metadata XISF core elements. Image data is returned as a numpy ndarray 
     (using the "channels-last" convention by default). 
 
     What's supported: 
     - Monolithic XISF files only
-        - XISF blocks with attachment block locations (neither inline nor embedded block locations as required 
-          for a complete baseline decoder)
+        - XISF data blocks with attachment, inline or embedded block locations 
         - Planar pixel storage models, *however it assumes 2D images only* (with multiple channels)
         - UInt8/16/32 and Float32/64 pixel sample formats
         - Grayscale and RGB color spaces     
@@ -48,13 +50,13 @@ class XISF:
         - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
           byte shuffling)
     - Encoding:
-        - Single image core element
-        - Uncompressed data blocks only       
-    - "Atomic" properties only (Scalar, Strings, TimePoint)
+        - Single image core element with an attached data block
+        - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
+          byte shuffling)
+    - "Atomic" properties only (scalar types, String, TimePoint)
     - Metadata and FITSKeyword core elements
 
     What's not supported (at least by now):
-    - Read pixel data from XISF blocks with inline or embedded block locations
     - Read pixel data in the normal pixel storage models
     - Read pixel data in the planar pixel storage models other than 2D images
     - Complex, Vector, Matrix and Table properties
@@ -203,12 +205,6 @@ class XISF:
         # TODO: rest of XISF core elements: Resolution, ICCProfile, Thumbnail, ...
 
 
-    @staticmethod
-    def _process_property(p):
-        # TODO: map XISF types to python types
-        return {**p.attrib, 'value': p.text} if p.text else p.attrib
-
-
     def get_images_metadata(self):
         """Provides the metadata of all image blocks contained in the XISF File, extracted from 
         the header (<Image> core elements). To get the actual image data, see read_image().
@@ -262,6 +258,60 @@ class XISF:
         return self._xisf_header_xml
 
 
+    def _read_data_block(self, elem):
+        method = elem['location'][0]
+        if method == 'inline':
+            return self._read_inline_data_block(elem)            
+        elif method == 'embedded':
+            return self._read_embedded_data_block(elem)   
+        elif method == 'attachment':
+            return self._read_attached_data_block(elem)
+        else:
+            raise NotImplementedError(f"Data block location type '{method}' not implemented: {elem}")
+
+
+    @staticmethod
+    def _read_inline_data_block(elem):
+        method, encoding = elem['location']
+        assert method == 'inline'
+        return XISF._decode_inline_or_embedded_data(encoding, elem['value'], elem)
+
+
+    @staticmethod
+    def _read_embedded_data_block(elem):
+        assert elem['location'][0] == 'embedded'
+        data_elem = ET.fromstring(elem['value'])
+        encoding, data = data.attrib['encoding'], data_elem.text
+        return XISF._decode_inline_or_embedded_data(encoding, data, elem)
+
+
+    @staticmethod
+    def _decode_inline_or_embedded_data(encoding, data, elem):
+        encodings = { 'base64': base64.b64decode, 'hex': base64.b16decode }
+        if encoding not in encodings:
+            raise NotImplementedError(f"Data block encoding type '{encoding}' not implemented: {elem}")
+        
+        data = encodings[encoding](data)
+        if 'compression' in elem:
+            data = XISF._decompress(data, elem)
+
+        return data
+
+
+    def _read_attached_data_block(self, elem):
+        method, pos, size = elem['location'] # Position and size of the Data Block containing the image data
+        assert method == 'attachment'
+
+        with open(self._fname, "rb") as f:
+            f.seek(pos)
+            data = f.read(size)            
+
+        if 'compression' in elem:
+            data = XISF._decompress(data, elem)
+
+        return data
+
+
     def read_image(self, n=0, data_format='channels_last'):
         """Extracts an image from a XISF object.
 
@@ -283,39 +333,15 @@ class XISF:
                 raise ValueError("File does not contain image data") from e
             else:
                 raise ValueError("Requested image #%d, valid range is [0..%d]" % (n, len(self._images_meta)-1)) from e
-        
-        pos, size = meta['location'] # Position and size of the Data Block containing the image data
 
         try:
             w, h, chc = meta['geometry'] # Assumes *two*-dimensional images (chc=channel count)
         except ValueError as e:
             raise NotImplementedError("Assumed 2D channels (width, height, channels), found %s geometry" % (meta['geometry'],))
 
-        with open(self._fname, "rb") as f:
-            if 'compression' in meta:
-                # (codec, uncompressed-size, item-size); item-size is None if not using byte shuffling
-                codec, uncompressed_size, item_size = meta['compression'] 
-                f.seek(pos)
-                im_data = f.read(size)
-
-                if codec.startswith("lz4"):
-                    im_data = lz4.block.decompress(im_data, uncompressed_size=uncompressed_size)
-                elif codec.startswith("zlib"):
-                    im_data = zlib.decompress(im_data)
-                else:
-                    raise NotImplementedError("Unimplemented compression codec %s" % (codec,))
-
-                if item_size: # using byte-shuffling
-                    im_data = self._unshuffle(im_data, item_size)
-                
-                im_data = np.frombuffer(im_data, dtype=meta['dtype'])
-
-            else:
-                # no compression
-                f.seek(0)
-                im_data = np.fromfile(f, offset=pos, dtype=meta['dtype'], count=h*w*chc)
-
-        im_data = im_data.reshape((chc,h,w))
+        data = self._read_data_block(meta)
+        im_data = np.frombuffer(data, dtype=meta['dtype'])
+        im_data = im_data.reshape((chc, h, w))
         return np.transpose(im_data, (1, 2, 0)) if data_format == 'channels_last' else im_data
 
 
@@ -386,33 +412,20 @@ class XISF:
         data_block = data_block.tobytes()
 
         uncompressed_size = im_data.size * im_data.itemsize
+        codec_str = codec
+
+        # Remove compression metadata if exists, it'll be re-generated
+        try:
+            del xisf_metadata['XISF:CompressionCodecs']
+            del xisf_metadata['XISF:CompressionLevel']
+        except:
+            pass        
 
         # Compression
         if codec is None:
             data_size = uncompressed_size
         else:
-            if shuffle:
-                compressed_block = XISF._shuffle(data_block, im_data.itemsize)
-                codec_str = codec + "+sh"
-            else:
-                compressed_block = data_block
-          
-            if codec == 'lz4hc':
-                level = level if level else XISF._compression_def_level['lz4hc']
-                compressed_block = lz4.block.compress(
-                    compressed_block, 
-                    mode='high_compression', 
-                    compression=level, 
-                    store_size=False
-                ) 
-            elif codec == 'lz4':
-                compressed_block = lz4.block.compress(compressed_block, store_size=False) 
-            elif codec == 'zlib':
-                level = level if level else XISF._compression_def_level['zlib']
-                compressed_block = zlib.compress(compressed_block, level=level)
-            else:
-                raise NotImplementedError("Unimplemented compression codec %s" % (codec,))        
-
+            compressed_block = XISF._compress(data_block, codec, level, shuffle, im_data.itemsize)
             compressed_size = len(compressed_block)
 
             if compressed_size < uncompressed_size:
@@ -420,13 +433,17 @@ class XISF:
                 data_block, data_size = compressed_block, compressed_size
 
                 # Add 'compression' image attribute: (codec:uncompressed-size[:item-size])
-                image_attrs['compression'] = f"{codec_str}:{uncompressed_size}:{im_data.itemsize}" if shuffle else f"{codec_str}:{uncompressed_size}"
+                if shuffle:
+                    codec_str += '+sh'
+                    image_attrs['compression'] = f"{codec_str}:{uncompressed_size}:{im_data.itemsize}" 
+                else:
+                    image_attrs['compression'] = f"{codec}:{uncompressed_size}"
 
                 # Add XISF:CompressionCodecs and XISF:CompressionLevel to file metadata
                 xisf_metadata['XISF:CompressionCodecs'] = {
                     'id': 'XISF:CompressionCodecs',
                     'type': 'String',
-                    'value': codec
+                    'value': codec_str
                 }
                 xisf_metadata['XISF:CompressionLevel'] = {
                     'id': 'XISF:CompressionLevel',
@@ -438,7 +455,6 @@ class XISF:
                 # See https://pixinsight.com/forum.old/index.php?topic=10942.msg68043#msg68043
                 # (In fact, PixInsight will show garbage image data if the data block is 
                 # compressed but the uncompressed size is smaller)
-                codec = None
                 data_size = uncompressed_size
 
 
@@ -481,23 +497,9 @@ class XISF:
         # Image
         image_xml = ET.SubElement(xisf_header_xml, 'Image', image_attrs)
 
-        # Auxiliary function to insert XISF properties in the XML tree
-        def _insert_property(parent, property_dict):
-            if property_dict['type'] == 'String':
-                ET.SubElement(parent, 'Property', {
-                    'id': property_dict['id'],
-                    'type': property_dict['type'],
-                }).text = str(property_dict['value'])
-            else:
-                ET.SubElement(parent, 'Property', {
-                    'id': property_dict['id'],
-                    'type': property_dict['type'], 
-                    'value': str(property_dict['value'])
-                })   
-
         #   Image XISFProperties
-        for property_dict in image_metadata.get('XISFProperties', {}).values():
-            _insert_property(image_xml, property_dict)
+        for p_dict in image_metadata.get('XISFProperties', {}).values():
+            XISF._insert_property(image_xml, p_dict)
 
         #   Image FITSKeywords
         for keyword_name, data in image_metadata.get('FITSKeywords', {}).items():
@@ -511,7 +513,7 @@ class XISF:
         # File Metadata
         metadata_xml = ET.SubElement(xisf_header_xml, 'Metadata')
         for property_dict in xisf_metadata.values():
-            _insert_property(metadata_xml, property_dict)
+            XISF._insert_property(metadata_xml, property_dict)
 
 
         # Headers combined length without attachment position in XML header
@@ -546,10 +548,66 @@ class XISF:
             f.write(data_block)
             bytes_written = f.tell()
 
-        return bytes_written, codec
+        return bytes_written, codec_str
 
 
-    # Auxiliary functions to parse some metadata attributes
+
+    # __/ Auxiliary functions to handle XISF attributes \________
+
+    # Process property attributes and convert to dict
+    def _process_property(self, p_et):
+        p_dict = p_et.attrib.copy()
+
+        if p_et.attrib['type'] == 'TimePoint':
+            pass  # TODO: convertir a datetime?
+        elif p_et.attrib['type'] == 'String':
+            p_dict['value'] = p_et.text
+            if 'location' in p_et.attrib:
+                p_dict['location'] = self._parse_location(p_et.attrib['location'])
+                if 'compression' in p_et.attrib:
+                    p_dict['compression'] = self._parse_compression(p_et.attrib['compression'])
+                p_dict['value'] = self._read_data_block(p_dict).decode("utf-8") 
+        elif 'value' in p_et.attrib:  # scalars and Complex*
+            p_dict['value'] = ast.literal_eval(p_et.attrib['value'])
+        else:
+            print(f"Unsupported Property type {p_et.attrib['type']}: {p_et}")
+        
+        return p_dict
+
+
+    # Insert XISF properties in the XML tree
+    @staticmethod    
+    def _insert_property(parent, p_dict):
+        # TODO ignores optional attributes (format, comment)
+        scalars = ['Int', 'Byte', 'Short', 'Float', 'Boolean', 'TimePoint']
+
+        if any(t in p_dict['type'] for t in scalars):
+            # scalars and TimePoint
+            # TODO add check for scalar or TimePoint
+            ET.SubElement(parent, 'Property', {
+                'id': p_dict['id'],
+                'type': p_dict['type'], 
+                'value': str(p_dict['value'])
+            })   
+        elif p_dict['type'] == 'String':
+            if 'location' in p_dict:
+                # TODO here we always assume location=inline:base64
+                text = str(p_dict['value'])
+                ET.SubElement(parent, 'Property', {
+                    'id': p_dict['id'],
+                    'type': p_dict['type'],
+                    'location': 'inline:base64',
+                }).text = base64.b64encode(text.encode("utf8")).decode("utf8")
+            else:
+                # Inline unencoded string (no 'location' attribute) 
+                ET.SubElement(parent, 'Property', {
+                    'id': p_dict['id'],
+                    'type': p_dict['type'],
+                }).text = str(p_dict['value'])
+        else:
+            print(f"Warning: skipping unsupported property {p_dict}")
+
+
     # Returns image shape, e.g. (x, y, channels)
     @staticmethod
     def _parse_geometry(g):
@@ -560,9 +618,9 @@ class XISF:
     @staticmethod
     def _parse_location(l):
         ll = l.split(':')
-        if ll[0] != 'attachment':
-            raise NotImplementedError("Image location type '%s' not implemented" % (ll[0],))
-        return tuple(map(int, ll[1:]))
+        if ll[0] not in ['inline', 'embedded', 'attachment']:
+            raise NotImplementedError("Data block location type '%s' not implemented" % (ll[0],))
+        return (ll[0], int(ll[1]), int(ll[2])) if ll[0] == 'attachment' else ll
 
 
     # Return equivalent numpy dtype
@@ -609,7 +667,9 @@ class XISF:
             return (cl[0], int(cl[1]), None)
 
 
-    # Auxiliary function to implement un-byteshuffling with numpy
+    # __/ Auxiliary functions for compression/shuffling \________
+
+    # Un-byteshuffling implementation based on numpy
     @staticmethod
     def _unshuffle(d, item_size):
         a = np.frombuffer(d, dtype=np.dtype('uint8'))
@@ -617,9 +677,52 @@ class XISF:
         return np.transpose(a).tobytes()        
 
 
-    # Auxiliary function to implement byteshuffling with numpy
+    # Byteshuffling implementation based on numpy
     @staticmethod
     def _shuffle(d, item_size):
         a = np.frombuffer(d, dtype=np.dtype('uint8'))
         a = a.reshape((-1, item_size))
         return np.transpose(a).tobytes()         
+
+
+    # LZ4/zlib decompression
+    @staticmethod
+    def _decompress(data, elem):
+        # (codec, uncompressed-size, item-size); item-size is None if not using byte shuffling
+        codec, uncompressed_size, item_size = elem['compression'] 
+
+        if codec.startswith("lz4"):
+            data = lz4.block.decompress(data, uncompressed_size=uncompressed_size)
+        elif codec.startswith("zlib"):
+            data = zlib.decompress(data)
+        else:
+            raise NotImplementedError("Unimplemented compression codec %s" % (codec,))
+
+        if item_size: # using byte-shuffling
+            data = XISF._unshuffle(data, item_size)
+
+        return data
+
+
+    # LZ4/zlib compression
+    @staticmethod
+    def _compress(data, codec, level=None, shuffle=False, itemsize=None):
+        compressed = XISF._shuffle(data, itemsize) if shuffle else data
+        
+        if codec == 'lz4hc':
+            level = level if level else XISF._compression_def_level['lz4hc']
+            compressed = lz4.block.compress(
+                compressed, 
+                mode='high_compression', 
+                compression=level, 
+                store_size=False
+            ) 
+        elif codec == 'lz4':
+            compressed = lz4.block.compress(compressed, store_size=False) 
+        elif codec == 'zlib':
+            level = level if level else XISF._compression_def_level['zlib']
+            compressed = zlib.compress(compressed, level=level)
+        else:
+            raise NotImplementedError("Unimplemented compression codec %s" % (codec,))        
+
+        return compressed
