@@ -1,6 +1,6 @@
 <a id="src/xisf"></a>
 
-# src/xisf
+# xisf
 
 XISF Encoder/Decoder (see https://pixinsight.com/xisf/).
 
