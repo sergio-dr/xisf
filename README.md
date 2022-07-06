@@ -1,8 +1,8 @@
-<a id="xisf"></a>
+<a id="src/xisf"></a>
 
-# xisf
+# src/xisf
 
-(Incomplete) XISF Encoder/Decoder (see https://pixinsight.com/xisf/).
+XISF Encoder/Decoder (see https://pixinsight.com/xisf/).
 
 This implementation is not endorsed nor related with PixInsight development team.
 
@@ -20,7 +20,7 @@ more details.
 You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 
-<a id="xisf.XISF"></a>
+<a id="src/xisf.XISF"></a>
 
 ## XISF Objects
 
@@ -28,14 +28,13 @@ this program.  If not, see <http://www.gnu.org/licenses/>.
 class XISF()
 ```
 
-Implements an *incomplete* (attached images only) baseline XISF Decoder and a simple baseline Encoder.
+Implements an baseline XISF Decoder and a simple baseline Encoder.
 It parses metadata from Image and Metadata XISF core elements. Image data is returned as a numpy ndarray 
 (using the "channels-last" convention by default). 
 
 What's supported: 
 - Monolithic XISF files only
-    - XISF blocks with attachment block locations (neither inline nor embedded block locations as required 
-      for a complete baseline decoder)
+    - XISF data blocks with attachment, inline or embedded block locations 
     - Planar pixel storage models, *however it assumes 2D images only* (with multiple channels)
     - UInt8/16/32 and Float32/64 pixel sample formats
     - Grayscale and RGB color spaces     
@@ -44,13 +43,13 @@ What's supported:
     - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
       byte shuffling)
 - Encoding:
-    - Single image core element
-    - Uncompressed data blocks only       
-- "Atomic" properties only (Scalar, Strings, TimePoint)
+    - Single image core element with an attached data block
+    - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
+      byte shuffling)
+- "Atomic" properties only (scalar types, String, TimePoint)
 - Metadata and FITSKeyword core elements
 
 What's not supported (at least by now):
-- Read pixel data from XISF blocks with inline or embedded block locations
 - Read pixel data in the normal pixel storage models
 - Read pixel data in the planar pixel storage models other than 2D images
 - Complex, Vector, Matrix and Table properties
@@ -87,7 +86,7 @@ plt.show()
 
 The XISF format specification is available at https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html
 
-<a id="xisf.XISF.__init__"></a>
+<a id="src/xisf.XISF.__init__"></a>
 
 #### \_\_init\_\_
 
@@ -107,7 +106,7 @@ get_images_metadata() and read_image().
 
   XISF object.
 
-<a id="xisf.XISF.get_images_metadata"></a>
+<a id="src/xisf.XISF.get_images_metadata"></a>
 
 #### get\_images\_metadata
 
@@ -142,7 +141,7 @@ property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': prope
 
   list [ m_0, m_1, ..., m_{n-1} ] where m_i is a dict as described above.
 
-<a id="xisf.XISF.get_file_metadata"></a>
+<a id="src/xisf.XISF.get_file_metadata"></a>
 
 #### get\_file\_metadata
 
@@ -160,7 +159,7 @@ Provides the metadata from the header of the XISF File (<Metadata> core elements
   property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': property_value, ...}
   ```
 
-<a id="xisf.XISF.get_metadata_xml"></a>
+<a id="src/xisf.XISF.get_metadata_xml"></a>
 
 #### get\_metadata\_xml
 
@@ -174,7 +173,7 @@ Returns the complete XML header as a xml.etree.ElementTree.Element object.
 
 - `xml.etree.ElementTree.Element` - complete XML XISF header
 
-<a id="xisf.XISF.read_image"></a>
+<a id="src/xisf.XISF.read_image"></a>
 
 #### read\_image
 
@@ -195,7 +194,7 @@ Extracts an image from a XISF object.
 
   Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
 
-<a id="xisf.XISF.read"></a>
+<a id="src/xisf.XISF.read"></a>
 
 #### read
 
@@ -218,7 +217,7 @@ Convenience method for reading a file containing a single image.
 
 - `[np.ndarray]` - Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
 
-<a id="xisf.XISF.write"></a>
+<a id="src/xisf.XISF.write"></a>
 
 #### write
 

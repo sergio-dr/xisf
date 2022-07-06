@@ -1,7 +1,7 @@
 # coding: utf-8
 
 """
-(Incomplete) XISF Encoder/Decoder (see https://pixinsight.com/xisf/).
+XISF Encoder/Decoder (see https://pixinsight.com/xisf/).
 
 This implementation is not endorsed nor related with PixInsight development team.
 
