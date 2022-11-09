@@ -84,7 +84,8 @@ else:
         print(f"{key:30s}: ")
         xisf_meta = im_meta[key]
         for xisf_keyw, xisf_prop in xisf_meta.items():
-            print(f"{TAB}{xisf_keyw:36s} [{xisf_prop['type']:10s}]: {render(xisf_prop['value'])}")
+            props_str = ", ".join([f"{k}: {v}" for k, v in xisf_prop.items() if k not in ('id', 'value')])
+            print(f"{TAB}{xisf_keyw:36s} [{props_str}]: {render(xisf_prop['value'])}")
 
         # FITSKeywords: { '<keyword>': [ {'value': ..., 'comment': ...}, ...], 
         #                 ... },
