@@ -52,7 +52,8 @@ else:
     print(f"{pseudokey:43s}: {len(ims_meta)}")
 
 
-    def render(text, width=40):
+    def render(value, width=40):
+        text = str(value)
         if len(text) > width:
             # Print indented text starting the next line
             if text.startswith("<?xml"):
