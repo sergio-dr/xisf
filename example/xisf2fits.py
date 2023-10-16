@@ -1,5 +1,6 @@
 # Example file for the xisf package (https://github.com/sergio-dr/xisf)
-# xisf2fits: command line tool for convertir XISF to FITS (only first image block!)
+# xisf2fits: command line tool for converting XISF to FITS
+# (only first image block!)
 
 from xisf import XISF
 from astropy.io import fits
@@ -10,7 +11,7 @@ APP_NAME = "xisf2fits"
 
 help_desc = (
     "Command line tool to convert (potentially compressed) XISF files "
-    "to FITS (only first image block!). " 
+    "to FITS (only first image block!). "
     f"Based on {XISF._creator_module}."
 )
 parser = argparse.ArgumentParser(description=help_desc)
@@ -27,12 +28,12 @@ print(f"Image dimensions: {img_data.shape}")
 img_meta = xisf.get_images_metadata()[0]
 print("Header:")
 fits_header = []
-for keyword, values in img_meta['FITSKeywords'].items():
+for keyword, values in img_meta["FITSKeywords"].items():
     for value in values:
         if keyword in ("COMMENT", "HISTORY"):
-            card = fits.Card(keyword, value['comment'])
+            card = fits.Card(keyword, value["comment"])
         else:
-            card = fits.Card(keyword, value['value'], value['comment'])
+            card = fits.Card(keyword, value["value"], value["comment"])
         print(card)
         fits_header.append(card)
 fits_header = fits.Header(fits_header)
