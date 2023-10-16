@@ -1,4 +1,4 @@
-<a id="src/xisf"></a>
+<a id="xisf"></a>
 
 # xisf
 
@@ -20,7 +20,7 @@ more details.
 You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 
-<a id="src/xisf.XISF"></a>
+<a id="xisf.XISF"></a>
 
 ## XISF Objects
 
@@ -40,12 +40,12 @@ What's supported:
     - Grayscale and RGB color spaces     
 - Decoding:
     - multiple Image core elements from a monolithic XISF file
-    - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]/zstd+
-      byte shuffling)
+    - Support all standard compression codecs defined in this specification for decompression 
+      (zlib/lz4[hc]/zstd + byte shuffling)
 - Encoding:
     - Single image core element with an attached data block
-    - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]/zstd+
-      byte shuffling)
+    - Support all standard compression codecs defined in this specification for decompression 
+      (zlib/lz4[hc]/zstd + byte shuffling)
 - "Atomic" properties only (scalar types, String, TimePoint)
 - Metadata and FITSKeyword core elements
 
@@ -86,7 +86,7 @@ plt.show()
 
 The XISF format specification is available at https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html
 
-<a id="src/xisf.XISF.__init__"></a>
+<a id="xisf.XISF.__init__"></a>
 
 #### \_\_init\_\_
 
@@ -106,7 +106,7 @@ get_images_metadata() and read_image().
 
   XISF object.
 
-<a id="src/xisf.XISF.get_images_metadata"></a>
+<a id="xisf.XISF.get_images_metadata"></a>
 
 #### get\_images\_metadata
 
@@ -141,7 +141,7 @@ property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': prope
 
   list [ m_0, m_1, ..., m_{n-1} ] where m_i is a dict as described above.
 
-<a id="src/xisf.XISF.get_file_metadata"></a>
+<a id="xisf.XISF.get_file_metadata"></a>
 
 #### get\_file\_metadata
 
@@ -159,7 +159,7 @@ Provides the metadata from the header of the XISF File (<Metadata> core elements
   property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': property_value, ...}
   ```
 
-<a id="src/xisf.XISF.get_metadata_xml"></a>
+<a id="xisf.XISF.get_metadata_xml"></a>
 
 #### get\_metadata\_xml
 
@@ -173,7 +173,7 @@ Returns the complete XML header as a xml.etree.ElementTree.Element object.
 
 - `xml.etree.ElementTree.Element` - complete XML XISF header
 
-<a id="src/xisf.XISF.read_image"></a>
+<a id="xisf.XISF.read_image"></a>
 
 #### read\_image
 
@@ -194,7 +194,7 @@ Extracts an image from a XISF object.
 
   Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
 
-<a id="src/xisf.XISF.read"></a>
+<a id="xisf.XISF.read"></a>
 
 #### read
 
@@ -217,7 +217,7 @@ Convenience method for reading a file containing a single image.
 
 - `[np.ndarray]` - Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
 
-<a id="src/xisf.XISF.write"></a>
+<a id="xisf.XISF.write"></a>
 
 #### write
 
@@ -237,10 +237,11 @@ will be used if it actually reduces the data size.
 - `image_metadata` - dict with the same structure described for m_i in get_images_metadata().
   Only 'FITSKeywords' and 'XISFProperties' keys are actually written, the rest are derived from im_data.
 - `xisf_metadata` - file metadata, dict with the same structure returned by get_file_metadata()
-- `codec` - compression codec ('zlib', 'lz4' or 'lz4hc'), or None to disable compression
+- `codec` - compression codec ('zlib', 'lz4', 'lz4hc' or 'zstd'), or None to disable compression
 - `shuffle` - whether to apply byte-shuffling before compression (ignored if codec is None). Recommended
-  for 'lz4' and 'lz4hc' compression algorithms.
-- `level` - for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9). Higher means more compression.
+  for 'lz4' ,'lz4hc' and 'zstd' compression algorithms.
+- `level` - for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9); for zstd, 1..22 (default: 3).
+  Higher means more compression.
 
 **Returns**:
 

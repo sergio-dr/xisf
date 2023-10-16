@@ -20,7 +20,7 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-__version__ = "0.9.1"  # See pyproject.toml
+__version__ = "0.9.2"  # See pyproject.toml
 
 import platform
 import xml.etree.ElementTree as ET
@@ -48,12 +48,12 @@ class XISF:
         - Grayscale and RGB color spaces     
     - Decoding:
         - multiple Image core elements from a monolithic XISF file
-        - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
-          byte shuffling)
+        - Support all standard compression codecs defined in this specification for decompression 
+          (zlib/lz4[hc]/zstd + byte shuffling)
     - Encoding:
         - Single image core element with an attached data block
-        - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
-          byte shuffling)
+        - Support all standard compression codecs defined in this specification for decompression 
+          (zlib/lz4[hc]/zstd + byte shuffling)
     - "Atomic" properties only (scalar types, String, TimePoint)
     - Metadata and FITSKeyword core elements
 
