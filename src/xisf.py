@@ -155,11 +155,6 @@ class XISF:
 
             # Get XISF (XML) Header
             self._xisf_header = f.read(self._headerlength)
-            
-            # Strip possible padding null bytes from the end as inserted by libXISF
-            # (https://gitea.nouspiro.space/nou/libXISF)
-            self._xisf_header = self._xisf_header.rstrip(b'\x00')
-
             self._xisf_header_xml = ET.fromstring(self._xisf_header)
         self._analyze_header()
 
