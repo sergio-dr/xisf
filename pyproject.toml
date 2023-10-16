@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "numpy",
     "lz4",
+    "zstandard",
 ]
 dynamic = ["version"]
 

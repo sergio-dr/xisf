@@ -27,6 +27,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import lz4.block # https://python-lz4.readthedocs.io/en/stable/lz4.block.html
 import zlib # https://docs.python.org/3/library/zlib.html
+import zstandard # https://python-zstandard.readthedocs.io/en/stable/
 import base64
 import sys
 from datetime import datetime
@@ -110,7 +111,8 @@ class XISF:
     _compression_def_level = {
         'zlib':  6, # 1..9, default: 6 as indicated in https://docs.python.org/3/library/zlib.html
         'lz4':   0, # no other values, as indicated in https://python-lz4.readthedocs.io/en/stable/lz4.block.html
-        'lz4hc': 9  # 1..12, (4-9 recommended), default: 9 as indicated in https://python-lz4.readthedocs.io/en/stable/lz4.block.html
+        'lz4hc': 9, # 1..12, (4-9 recommended), default: 9 as indicated in https://python-lz4.readthedocs.io/en/stable/lz4.block.html
+        'zstd':  3  # 1..22, (3-9 recommended), default: 3 as indicated in https://facebook.github.io/zstd/zstd_manual.html
     }
 
     def __init__(self, fname):
@@ -378,10 +380,11 @@ class XISF:
             image_metadata: dict with the same structure described for m_i in get_images_metadata(). 
               Only 'FITSKeywords' and 'XISFProperties' keys are actually written, the rest are derived from im_data.
             xisf_metadata: file metadata, dict with the same structure returned by get_file_metadata()
-            codec: compression codec ('zlib', 'lz4' or 'lz4hc'), or None to disable compression
-            shuffle: whether to apply byte-shuffling before compression (ignored if codec is None). Recommended 
-              for 'lz4' and 'lz4hc' compression algorithms.         
-            level: for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9). Higher means more compression.
+            codec: compression codec ('zlib', 'lz4', 'lz4hc' or 'zstd'), or None to disable compression
+            shuffle: whether to apply byte-shuffling before compression (ignored if codec is None). Recommended
+              for 'lz4' ,'lz4hc' and 'zstd' compression algorithms.
+            level: for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9); for zstd, 1..22 (default: 3).
+              Higher means more compression.
         Returns:
             bytes_written: the total number of bytes written into the output file. 
             codec: The codec actually used, i.e., None if compression did not reduce the data block size so
@@ -685,7 +688,7 @@ class XISF:
         return np.transpose(a).tobytes()         
 
 
-    # LZ4/zlib decompression
+    # LZ4/zlib/zstd decompression
     @staticmethod
     def _decompress(data, elem):
         # (codec, uncompressed-size, item-size); item-size is None if not using byte shuffling
@@ -693,6 +696,8 @@ class XISF:
 
         if codec.startswith("lz4"):
             data = lz4.block.decompress(data, uncompressed_size=uncompressed_size)
+        elif codec.startswith("zstd"):
+            data = zstandard.decompress(data, max_output_size=uncompressed_size)
         elif codec.startswith("zlib"):
             data = zlib.decompress(data)
         else:
@@ -704,7 +709,7 @@ class XISF:
         return data
 
 
-    # LZ4/zlib compression
+    # LZ4/zlib/zstd compression
     @staticmethod
     def _compress(data, codec, level=None, shuffle=False, itemsize=None):
         compressed = XISF._shuffle(data, itemsize) if shuffle else data
@@ -719,6 +724,9 @@ class XISF:
             ) 
         elif codec == 'lz4':
             compressed = lz4.block.compress(compressed, store_size=False) 
+        elif codec == 'zstd':
+            level = level if level else XISF._compression_def_level['zstd']
+            compressed = zstandard.compress(compressed, level=level)
         elif codec == 'zlib':
             level = level if level else XISF._compression_def_level['zlib']
             compressed = zlib.compress(compressed, level=level)

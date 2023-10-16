@@ -40,11 +40,11 @@ What's supported:
     - Grayscale and RGB color spaces     
 - Decoding:
     - multiple Image core elements from a monolithic XISF file
-    - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
+    - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]/zstd+
       byte shuffling)
 - Encoding:
     - Single image core element with an attached data block
-    - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]+
+    - Support all standard compression codecs defined in this specification for decompression (zlib/lz4[hc]/zstd+
       byte shuffling)
 - "Atomic" properties only (scalar types, String, TimePoint)
 - Metadata and FITSKeyword core elements
