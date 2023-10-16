@@ -20,7 +20,7 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-__version__ = "0.9.2"  # See pyproject.toml
+__version__ = "0.9.3"  # See pyproject.toml
 
 import platform
 import xml.etree.ElementTree as ET
@@ -184,8 +184,9 @@ class XISF:
                 "dtype": self._parse_sampleFormat(image.attrib["sampleFormat"]),
                 "FITSKeywords": fits_keywords,
                 "XISFProperties": {
-                    p.attrib["id"]: self._process_property(p)
+                    p.attrib["id"]: prop
                     for p in image.findall("xisf:Property", self._xml_ns)
+                    if (prop := self._process_property(p))
                 },
             }
             # Also parses compression attribute if present, converting it to a tuple
@@ -606,6 +607,7 @@ class XISF:
             p_dict["value"] = ast.literal_eval(p_et.attrib["value"])
         else:
             print(f"Unsupported Property type {p_et.attrib['type']}: {p_et}")
+            p_dict = False
 
         return p_dict
 
