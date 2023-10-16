@@ -155,6 +155,8 @@ class XISF:
 
             # Get XISF (XML) Header
             self._xisf_header = f.read(self._headerlength)
+            # Strip possible padding null bytes from the end
+            self._xisf_header = self._xisf_header.split(b'\x00',1)[0]
             self._xisf_header_xml = ET.fromstring(self._xisf_header)
         self._analyze_header()
 
@@ -696,7 +698,7 @@ class XISF:
 
         if codec.startswith("lz4"):
             data = lz4.block.decompress(data, uncompressed_size=uncompressed_size)
-        if codec.startswith("zstd"):
+        elif codec.startswith("zstd"):
             data = zstandard.decompress(data, max_output_size=uncompressed_size)
         elif codec.startswith("zlib"):
             data = zlib.decompress(data)
