@@ -20,7 +20,7 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-__version__ = "0.9.3"  # See pyproject.toml
+__version__ = "0.9.4"  # See pyproject.toml
 
 import platform
 import xml.etree.ElementTree as ET
@@ -593,7 +593,7 @@ class XISF:
         p_dict = p_et.attrib.copy()
 
         if p_et.attrib["type"] == "TimePoint":
-            pass  # TODO: convertir a datetime?
+            p_dict["value"] = p_et.attrib["value"]  # TODO: convert to datetime?
         elif p_et.attrib["type"] == "String":
             p_dict["value"] = p_et.text
             if "location" in p_et.attrib:
@@ -603,6 +603,8 @@ class XISF:
                         p_et.attrib["compression"]
                     )
                 p_dict["value"] = self._read_data_block(p_dict).decode("utf-8")
+        elif p_et.attrib["type"] == "Boolean":
+            p_dict["value"] = p_et.attrib["value"] == "true"
         elif "value" in p_et.attrib:  # scalars and Complex*
             p_dict["value"] = ast.literal_eval(p_et.attrib["value"])
         else:
