@@ -46,13 +46,13 @@ What's supported:
     - Single image core element with an attached data block
     - Support all standard compression codecs defined in this specification for decompression 
       (zlib/lz4[hc]/zstd + byte shuffling)
-- "Atomic" properties only (scalar types, String, TimePoint)
+- "Atomic" properties (scalar types, String, TimePoint), Vector and Matrix (e.g. astrometric solutions)
 - Metadata and FITSKeyword core elements
 
 What's not supported (at least by now):
 - Read pixel data in the normal pixel storage models
 - Read pixel data in the planar pixel storage models other than 2D images
-- Complex, Vector, Matrix and Table properties
+- Complex and Table properties
 - Any other not explicitly supported core elements (Resolution, Thumbnail, ICCProfile, etc.)
 
 Usage example:
