@@ -737,7 +737,7 @@ class XISF:
                         "location": XISF._to_location(("attachment", "", sz)),
                     },
                 )
-                return {"xml": xml, "location": 0, "size": sz, "data": text}
+                return {"xml": xml, "location": 0, "size": sz, "data": text.encode()}
             else:
                 # string directly as child (no 'location' attribute)
                 ET.SubElement(
