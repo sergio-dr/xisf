@@ -20,8 +20,6 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-__version__ = "0.9.5"  # See pyproject.toml
-
 import platform
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -374,8 +372,8 @@ class XISF:
         fname,
         im_data,
         creator_app=None,
-        image_metadata={},
-        xisf_metadata={},
+        image_metadata=None,
+        xisf_metadata=None,
         codec=None,
         shuffle=False,
         level=None,
@@ -401,6 +399,12 @@ class XISF:
             compression was not finally used.
 
         """
+        if image_metadata is None:
+            image_metadata = {}
+
+        if xisf_metadata is None:
+            xisf_metadata = {}
+
         # Data block alignment
         blk_sz = xisf_metadata.get("XISF:BlockAlignmentSize", {"value": XISF._block_alignment_size})[
             "value"
@@ -499,12 +503,12 @@ class XISF:
             xisf_metadata["XISF:BlockAlignmentSize"] = {
                 "id": "XISF:BlockAlignmentSize",
                 "type": "UInt16",
-                "value": str(blk_sz),
+                "value": blk_sz,
             }
             xisf_metadata["XISF:MaxInlineBlockSize"] = {
                 "id": "XISF:MaxInlineBlockSize",
                 "type": "UInt16",
-                "value": str(max_inline_blk_sz),
+                "value": max_inline_blk_sz,
             }
             if codec is not None:
                 # Add XISF:CompressionCodecs and XISF:CompressionLevel to file metadata

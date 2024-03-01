@@ -4,6 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xisf"
+version = "0.9.5"
 description = "Encoder/Decoder for XISF (Extensible Image Serialization Format)"
 readme = "README.md"
 authors = [{ name = "Sergio Díaz", email = "sergio.diaz.ruiz@gmail.com" }]
@@ -22,10 +23,6 @@ dependencies = [
     "lz4",
     "zstandard",
 ]
-dynamic = ["version"]
-
-[tool.setuptools.dynamic]
-version = {attr = "xisf.__version__"}
 
 [project.urls]
 Homepage = "https://github.com/sergio-dr/xisf"

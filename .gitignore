@@ -1,5 +1,4 @@
 __pycache__
-xisf.egg-info
-other
+*.egg-info
 dist
 *.txt
