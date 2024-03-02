@@ -20,6 +20,9 @@ You should have received a copy of the GNU General Public License along with
 this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+from importlib.metadata import version
+__version__ = version(__name__)
+
 import platform
 import xml.etree.ElementTree as ET
 import numpy as np
