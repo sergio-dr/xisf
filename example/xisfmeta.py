@@ -47,7 +47,7 @@ else:
 
     print(f"Filename: {args.input_file}")
 
-    print("\n\n__/ File metadata \__________")
+    print("\n\n__/ File metadata \\__________")
     for key, prop in file_meta.items():
         print(f"{key:30s} [{prop['type']:10s}]: {prop['value']}")
 
@@ -72,7 +72,7 @@ else:
             return text
 
     for i, im_meta in enumerate(ims_meta):
-        print(f"\n\n__/ Image #{i} \__________")
+        print(f"\n\n__/ Image #{i} \\__________")
 
         # Image attributes
         key = "Image attributes"

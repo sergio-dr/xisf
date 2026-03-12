@@ -5,7 +5,7 @@ XISF Encoder/Decoder (see https://pixinsight.com/xisf/).
 
 This implementation is not endorsed nor related with PixInsight development team.
 
-Copyright (C) 2021-2023 Sergio Díaz, sergiodiaz.eu
+Copyright (C) 2021-2026 Sergio Díaz, sergiodiaz.eu
 
 This program is free software: you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -153,7 +153,9 @@ class XISF:
             _ = f.read(self._reserved_len)
 
             # Get XISF (XML) Header
-            self._xisf_header = f.read(self._headerlength)
+            #   https://github.com/sergio-dr/xisf/issues/6: some files have null padding at the 
+            #   end of the header, so we strip it before parsing the XML
+            self._xisf_header = f.read(self._headerlength).rstrip(b"\0")
             self._xisf_header_xml = ET.fromstring(self._xisf_header)
         self._analyze_header()
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xisf"
-version = "0.9.5"
+version = "0.9.5b"
 description = "Encoder/Decoder for XISF (Extensible Image Serialization Format)"
 readme = "README.md"
 authors = [{ name = "Sergio Díaz", email = "sergio.diaz.ruiz@gmail.com" }]
