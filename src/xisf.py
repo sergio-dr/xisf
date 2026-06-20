@@ -31,7 +31,7 @@ import zlib  # https://docs.python.org/3/library/zlib.html
 import zstandard  # https://python-zstandard.readthedocs.io/en/stable/
 import base64
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 import ast
 
 
@@ -482,7 +482,7 @@ class XISF:
             xisf_metadata["XISF:CreationTime"] = {
                 "id": "XISF:CreationTime",
                 "type": "String",
-                "value": datetime.utcnow().isoformat(),
+                "value": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             }
             xisf_metadata["XISF:CreatorApplication"] = {
                 "id": "XISF:CreatorApplication",
