@@ -1,0 +1,9 @@
+.lprof
+.pytest_cache
+.tox
+.vscode
+__pycache__
+*.austin
+dist
+src/__pycache__
+src/*.egg-info
