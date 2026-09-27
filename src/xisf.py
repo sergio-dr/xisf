@@ -31,8 +31,14 @@ import zlib  # https://docs.python.org/3/library/zlib.html
 import zstandard  # https://python-zstandard.readthedocs.io/en/stable/
 import base64
 import sys
+import warnings
 from datetime import datetime, timezone
 import ast
+
+
+class XISFWarning(UserWarning):
+    """Warning category for XISF files that deviate from the specification or
+    contain constructs this implementation cannot handle."""
 
 
 class XISF:
@@ -207,7 +213,23 @@ class XISF:
 
         # Analyze header for file metadata
         self._file_meta = {}
-        for p in self._xisf_header_xml.find("xisf:Metadata", self._xml_ns):
+        metadata_elems = self._xisf_header_xml.findall("xisf:Metadata", self._xml_ns)
+        if not metadata_elems:
+            # The XISF 1.0 spec requires a unique Metadata element as a child of
+            # the root element, so its absence is a deviation from the spec.
+            warnings.warn(
+                f"Missing <Metadata> element in XISF header of {self._fname}",
+                XISFWarning,
+            )
+        elif len(metadata_elems) > 1:
+            # Only one Metadata element is allowed; ignore any extra ones rather
+            # than merging them, which would silently invent conflicting values.
+            warnings.warn(
+                f"Found {len(metadata_elems)} <Metadata> elements in XISF header of "
+                f"{self._fname}; using the first",
+                XISFWarning,
+            )
+        for p in metadata_elems[0] if metadata_elems else []:
             self._file_meta[p.attrib["id"]] = self._process_property(p)
 
         # TODO: rest of XISF core elements: Resolution, ICCProfile, Thumbnail, ...
@@ -701,7 +723,10 @@ class XISF:
             p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=length)
             p_dict["value"] = p_dict["value"].reshape((p_dict["rows"], p_dict["columns"]))
         else:
-            print(f"Unsupported Property type {p_dict['type']}: {p_et}")
+            warnings.warn(
+                f"Unsupported Property type {p_dict['type']}: {p_et}",
+                XISFWarning,
+            )
             p_dict = False
 
         return p_dict
@@ -818,7 +843,10 @@ class XISF:
                     },
                 ).text = str(base64.b64encode(data.tobytes()), "ascii")
         else:
-            print(f"Warning: skipping unsupported property {p_dict}")
+            warnings.warn(
+                f"Skipping unsupported property {p_dict}",
+                XISFWarning,
+            )
 
         return False
 
