@@ -101,20 +101,20 @@ def image_element(im, location="inline", encoding="base64", codec=None, item_siz
 
 def vector_property_element(
     values, ptype="F64Vector", location="inline", encoding="base64",
-    codec=None, item_size=None,
+    codec=None, item_size=None, extra_attrs="",
 ):
     """Build a <Property> element holding a vector in an inline/embedded block."""
     arr = np.asarray(values)
     text, compression = encode_block(
         arr.tobytes(), encoding=encoding, codec=codec, item_size=item_size
     )
-    attrs = f'id="{ptype}:Test" type="{ptype}" length="{arr.size}"'
+    attrs = f'id="{ptype}:Test" type="{ptype}" length="{arr.size}"{extra_attrs}'
     return _property_body(attrs, text, compression, location, encoding)
 
 
 def matrix_property_element(
     values, ptype="F64Matrix", location="inline", encoding="base64",
-    codec=None, item_size=None,
+    codec=None, item_size=None, extra_attrs="",
 ):
     """Build a <Property> element holding a matrix in an inline/embedded block."""
     arr = np.asarray(values)
@@ -123,21 +123,21 @@ def matrix_property_element(
     )
     attrs = (
         f'id="{ptype}:Test" type="{ptype}" '
-        f'rows="{arr.shape[0]}" columns="{arr.shape[1]}"'
+        f'rows="{arr.shape[0]}" columns="{arr.shape[1]}"{extra_attrs}'
     )
     return _property_body(attrs, text, compression, location, encoding)
 
 
 def string_property_element(
     text, ptype="String", location="inline", encoding="base64",
-    codec=None, item_size=None,
+    codec=None, item_size=None, extra_attrs="",
 ):
     """Build a <Property> element holding a String in an inline/embedded block."""
     raw = text.encode("utf-8")
     body, compression = encode_block(
         raw, encoding=encoding, codec=codec, item_size=item_size
     )
-    attrs = f'id="String:Test" type="String"'
+    attrs = f'id="String:Test" type="String"{extra_attrs}'
     return _property_body(attrs, body, compression, location, encoding)
 
 

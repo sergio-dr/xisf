@@ -726,18 +726,29 @@ class XISF:
         elif p_dict["type"] == "Boolean":
             # Boolean valid values are "true" and "false"
             p_dict["value"] = p_dict["value"] == "true"
-        elif "value" in p_et.attrib:
-            # Scalars (Float64, UInt32, etc.) and Complex*
-            p_dict["value"] = ast.literal_eval(p_dict["value"])
         elif "Vector" in p_dict["type"]:
-            p_dict["value"] = p_et.text
+            # A Vector property shall not have a value attribute (spec 11.1.8),
+            # so it must be tested before the scalar fallback below
+            if "value" in p_et.attrib:
+                warnings.warn(
+                    f"Vector property {p_dict['id']} has a forbidden value attribute,"
+                    f" ignoring it",
+                    XISFWarning,
+                )
             p_dict["length"] = int(p_dict["length"])
             p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
             self._process_location_compression(p_dict)
             raw_data = self._read_data_block(p_dict, p_et)
             p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=p_dict["length"])
         elif "Matrix" in p_dict["type"]:
-            p_dict["value"] = p_et.text
+            # A Matrix property shall not have a value attribute (spec 11.1.9),
+            # so it must be tested before the scalar fallback below
+            if "value" in p_et.attrib:
+                warnings.warn(
+                    f"Matrix property {p_dict['id']} has a forbidden value attribute,"
+                    f" ignoring it",
+                    XISFWarning,
+                )
             p_dict["rows"] = int(p_dict["rows"])
             p_dict["columns"] = int(p_dict["columns"])
             length = p_dict["rows"] * p_dict["columns"]
@@ -746,6 +757,9 @@ class XISF:
             raw_data = self._read_data_block(p_dict, p_et)
             p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=length)
             p_dict["value"] = p_dict["value"].reshape((p_dict["rows"], p_dict["columns"]))
+        elif "value" in p_et.attrib:
+            # Scalars (Float64, UInt32, etc.) and Complex*
+            p_dict["value"] = ast.literal_eval(p_dict["value"])
         else:
             warnings.warn(
                 f"Unsupported Property type {p_dict['type']}: {p_et}",
