@@ -26,3 +26,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/sergio-dr/xisf"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

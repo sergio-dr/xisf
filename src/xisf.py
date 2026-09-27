@@ -138,6 +138,7 @@ class XISF:
         self._xisf_header = None
         self._xisf_header_xml = None
         self._images_meta = None
+        self._images_xml = None
         self._file_meta = None
         ET.register_namespace("", self._xml_ns["xisf"])
 
@@ -168,6 +169,9 @@ class XISF:
     def _analyze_header(self):
         # Analyze header to get Data Blocks position and length
         self._images_meta = []
+        # The XML element of each image, index-aligned with _images_meta, needed to
+        # read 'inline' and 'embedded' data blocks, whose contents are in the XML
+        self._images_xml = []
         for image in self._xisf_header_xml.findall("xisf:Image", self._xml_ns):
             image_basic_meta = image.attrib
 
@@ -210,6 +214,7 @@ class XISF:
 
             # Append the image metadata to the list
             self._images_meta.append(image_meta)
+            self._images_xml.append(image)
 
         # Analyze header for file metadata
         self._file_meta = {}
@@ -284,33 +289,52 @@ class XISF:
         """
         return self._xisf_header_xml
 
-    def _read_data_block(self, elem):
+    def _read_data_block(self, elem, xml_elem):
+        # xml_elem is the XML element that serialized the data block; it is needed
+        # by the 'inline' and 'embedded' locations, whose contents are stored in the
+        # XML serialization and not in the parsed metadata dict (elem).
         method = elem["location"][0]
         if method == "inline":
-            return self._read_inline_data_block(elem)
+            return self._read_inline_data_block(elem, xml_elem)
         elif method == "embedded":
-            return self._read_embedded_data_block(elem)
+            return self._read_embedded_data_block(elem, xml_elem)
         elif method == "attachment":
             return self._read_attached_data_block(elem)
         else:
             raise NotImplementedError(f"Data block location type '{method}' not implemented: {elem}")
 
     @staticmethod
-    def _read_inline_data_block(elem):
+    def _read_inline_data_block(elem, xml_elem):
         method, encoding = elem["location"]
         assert method == "inline"
-        return XISF._decode_inline_or_embedded_data(encoding, elem["value"], elem)
+        # An inline data block is serialized in the character contents of the element
+        return XISF._decode_inline_or_embedded_data(encoding, xml_elem.text, elem)
 
     @staticmethod
-    def _read_embedded_data_block(elem):
+    def _read_embedded_data_block(elem, xml_elem):
         assert elem["location"][0] == "embedded"
-        data_elem = ET.fromstring(elem["value"])
-        encoding, data = data.attrib["encoding"], data_elem.text
-        return XISF._decode_inline_or_embedded_data(encoding, data, elem)
+        # An embedded data block is serialized in the character contents of a child
+        # Data element, which also carries the encoding and compression attributes
+        data_elem = xml_elem.find("xisf:Data", XISF._xml_ns)
+        if data_elem is None:
+            raise ValueError(f"Embedded data block with no child Data element: {elem}")
+        data_dict = dict(elem)
+        if "compression" in data_elem.attrib:
+            data_dict["compression"] = XISF._parse_compression(
+                data_elem.attrib["compression"]
+            )
+        return XISF._decode_inline_or_embedded_data(
+            data_elem.attrib["encoding"], data_elem.text, data_dict
+        )
 
     @staticmethod
     def _decode_inline_or_embedded_data(encoding, data, elem):
-        encodings = {"base64": base64.b64decode, "hex": base64.b16decode}
+        # Base16 data is serialized in lowercase (see the XISF 1.0 spec), so
+        # casefold=True is required to accept it
+        encodings = {
+            "base64": base64.b64decode,
+            "hex": lambda d: base64.b16decode(d, casefold=True),
+        }
         if encoding not in encodings:
             raise NotImplementedError(
                 f"Data block encoding type '{encoding}' not implemented: {elem}"
@@ -369,7 +393,7 @@ class XISF:
                 f"Assumed 2D channels (width, height, channels), found {meta['geometry']} geometry"
             )
 
-        data = self._read_data_block(meta)
+        data = self._read_data_block(meta, self._images_xml[n])
         im_data = np.frombuffer(data, dtype=meta["dtype"])
         im_data = im_data.reshape((chc, h, w))
         return np.transpose(im_data, (1, 2, 0)) if data_format == "channels_last" else im_data
@@ -698,7 +722,7 @@ class XISF:
             if "location" in p_dict:
                 # Process location and compression attributes to find data block
                 self._process_location_compression(p_dict)
-                p_dict["value"] = self._read_data_block(p_dict).decode("utf-8")
+                p_dict["value"] = self._read_data_block(p_dict, p_et).decode("utf-8")
         elif p_dict["type"] == "Boolean":
             # Boolean valid values are "true" and "false"
             p_dict["value"] = p_dict["value"] == "true"
@@ -710,7 +734,7 @@ class XISF:
             p_dict["length"] = int(p_dict["length"])
             p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
             self._process_location_compression(p_dict)
-            raw_data = self._read_data_block(p_dict)
+            raw_data = self._read_data_block(p_dict, p_et)
             p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=p_dict["length"])
         elif "Matrix" in p_dict["type"]:
             p_dict["value"] = p_et.text
@@ -719,7 +743,7 @@ class XISF:
             length = p_dict["rows"] * p_dict["columns"]
             p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
             self._process_location_compression(p_dict)
-            raw_data = self._read_data_block(p_dict)
+            raw_data = self._read_data_block(p_dict, p_et)
             p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=length)
             p_dict["value"] = p_dict["value"].reshape((p_dict["rows"], p_dict["columns"]))
         else:
