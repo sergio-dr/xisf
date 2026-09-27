@@ -41,6 +41,15 @@ class XISFWarning(UserWarning):
     contain constructs this implementation cannot handle."""
 
 
+class XISFError(ValueError):
+    """Raised when a XISF file omits an attribute that the XISF 1.0 specification
+    declares mandatory, leaving the decoder with no way to continue.
+
+    This subclasses ValueError so that callers who already catch malformed-input
+    errors around XISF keep working.
+    """
+
+
 class XISF:
     """Implements an baseline XISF Decoder and a simple baseline Encoder.
     It parses metadata from Image and Metadata XISF core elements. Image data is returned as a numpy ndarray
@@ -183,6 +192,17 @@ class XISF:
             #   prepare a dict of lists. Each element in the list is a dict
             #   that hold the value and the comment associated with the keyword.
             #   Not as clear as I would like.
+            # The spec declares these Image attributes mandatory (section 12.1.1).
+            # Checked before FITSKeyword parsing so a malformed Image is reported
+            # on its own terms rather than as a missing FITS keyword.
+            for attr in ("geometry", "location", "sampleFormat"):
+                if attr not in image.attrib:
+                    raise XISFError(
+                        f"Image {image.attrib.get('id', '<unknown>')} is missing its"
+                        f" mandatory '{attr}' attribute (required by the XISF 1.0"
+                        f" spec, section 12.1.1)"
+                    )
+
             fits_keywords = {}
             for a in image.findall("xisf:FITSKeyword", self._xml_ns):
                 fits_keywords.setdefault(a.attrib["name"], []).append(
@@ -735,7 +755,7 @@ class XISF:
                     f" ignoring it",
                     XISFWarning,
                 )
-            p_dict["length"] = int(p_dict["length"])
+            p_dict["length"] = self._require_int_attr(p_dict, "length", "11.1.8")
             p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
             self._process_location_compression(p_dict)
             raw_data = self._read_data_block(p_dict, p_et)
@@ -749,8 +769,8 @@ class XISF:
                     f" ignoring it",
                     XISFWarning,
                 )
-            p_dict["rows"] = int(p_dict["rows"])
-            p_dict["columns"] = int(p_dict["columns"])
+            p_dict["rows"] = self._require_int_attr(p_dict, "rows", "11.1.9")
+            p_dict["columns"] = self._require_int_attr(p_dict, "columns", "11.1.9")
             length = p_dict["rows"] * p_dict["columns"]
             p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
             self._process_location_compression(p_dict)
@@ -770,8 +790,50 @@ class XISF:
         return p_dict
 
     @staticmethod
+    def _require_int_attr(p_dict, name, spec_section):
+        """Return a mandatory unsigned integer attribute as an int.
+
+        The spec declares these attributes mandatory, so a missing one is
+        unrecoverable: without the component count there is no way to know how
+        much of the data block belongs to the property. A malformed value is
+        equally unrecoverable, since it cannot be interpreted.
+        """
+        prop_id = p_dict.get("id", "<unknown>")
+        if name not in p_dict:
+            raise XISFError(
+                f"Property {prop_id} of type {p_dict['type']} is missing its mandatory"
+                f" '{name}' attribute (required by the XISF 1.0 spec, section"
+                f" {spec_section})"
+            )
+        try:
+            return int(p_dict[name])
+        except (TypeError, ValueError) as e:
+            raise XISFError(
+                f"Property {prop_id} has a malformed '{name}' attribute:"
+                f" {p_dict[name]!r} is not an integer (required by the XISF 1.0"
+                f" spec, section {spec_section})"
+            ) from e
+
+    @staticmethod
+    def _require_location(p_dict):
+        """Return a mandatory location attribute, parsed.
+
+        A Vector or Matrix shall have a location attribute (spec 11.1.8, 11.1.9),
+        and its value is serialized as an XISF data block. Without it there is no
+        data block to read, so the property cannot be decoded.
+        """
+        if "location" not in p_dict:
+            raise XISFError(
+                f"Property {p_dict.get('id', '<unknown>')} of type {p_dict['type']} is"
+                f" missing its mandatory 'location' attribute, so its data block"
+                f" cannot be found (required by the XISF 1.0 spec, section 11.1.8"
+                f" and 11.1.9)"
+            )
+        return XISF._parse_location(p_dict["location"])
+
+    @staticmethod
     def _process_location_compression(p_dict):
-        p_dict["location"] = XISF._parse_location(p_dict["location"])
+        p_dict["location"] = XISF._require_location(p_dict)
         if "compression" in p_dict:
             p_dict["compression"] = XISF._parse_compression(p_dict["compression"])
 

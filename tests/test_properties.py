@@ -18,7 +18,7 @@ import warnings
 import numpy as np
 import pytest
 
-from xisf import XISF, XISFWarning
+from xisf import XISF, XISFError, XISFWarning
 
 from .conftest import (
     METADATA,
@@ -279,6 +279,147 @@ def test_vector_matrix_roundtrip_through_writer(tmp_path):
 
     np.testing.assert_array_equal(back["V"]["value"], props["V"]["value"])
     np.testing.assert_array_equal(back["M"]["value"], props["M"]["value"])
+
+
+# --------------------------------------------------------------------------
+# Missing mandatory attributes must be reported clearly
+# --------------------------------------------------------------------------
+#
+# The spec declares length (11.1.8), rows and columns (11.1.9), location
+# (11.1.8, 11.1.9) and the Image attributes (12.1.1) mandatory. Before this
+# was handled explicitly, each of these surfaced as a bare KeyError from deep
+# inside the decoder, which told the user nothing about the file or the
+# property at fault.
+
+
+@pytest.mark.parametrize(
+    "inner,attr,section",
+    [
+        (
+            '<Property id="V:Bad" type="F64Vector" location="inline:base64">'
+            "AAAA</Property>",
+            "length",
+            "11.1.8",
+        ),
+        (
+            '<Property id="V:Bad" type="F64Vector" length="4"/>',
+            "location",
+            "11.1.8",
+        ),
+        (
+            '<Property id="M:Bad" type="F64Matrix" columns="2"'
+            ' location="inline:base64">AAAAAAAA</Property>',
+            "rows",
+            "11.1.9",
+        ),
+        (
+            '<Property id="M:Bad" type="F64Matrix" rows="2"'
+            ' location="inline:base64">AAAAAAAA</Property>',
+            "columns",
+            "11.1.9",
+        ),
+        (
+            '<Property id="M:Bad" type="F64Matrix" rows="2" columns="2"/>',
+            "location",
+            "11.1.9",
+        ),
+    ],
+)
+def test_missing_mandatory_property_attribute(make_file, inner, attr, section):
+    with pytest.raises(XISFError) as exc:
+        XISF(str(make_file(body_with_image(inner))))
+
+    msg = str(exc.value)
+    assert f"'{attr}'" in msg
+    # The message must identify the property and cite the spec
+    assert "Bad" in msg
+    assert section in msg
+
+
+@pytest.mark.parametrize(
+    "inner,attr",
+    [
+        (
+            '<Property id="V:Bad" type="F64Vector" length="four"'
+            ' location="inline:base64">AAAA</Property>',
+            "length",
+        ),
+        (
+            '<Property id="M:Bad" type="F64Matrix" rows="x" columns="2"'
+            ' location="inline:base64">AAAAAAAA</Property>',
+            "rows",
+        ),
+        (
+            '<Property id="M:Bad" type="F64Matrix" rows="2" columns=""'
+            ' location="inline:base64">AAAAAAAA</Property>',
+            "columns",
+        ),
+    ],
+)
+def test_malformed_mandatory_property_attribute(make_file, inner, attr):
+    """A present-but-uninterpretable attribute is reported, not raised as ValueError."""
+    with pytest.raises(XISFError) as exc:
+        XISF(str(make_file(body_with_image(inner))))
+
+    assert f"malformed '{attr}'" in str(exc.value)
+    assert "not an integer" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "attrs", ["", ' location="inline:base64"', ' sampleFormat="UInt16"']
+)
+def test_missing_mandatory_image_attribute(make_file, attrs):
+    """Image attributes are mandatory too (spec 12.1.1)."""
+    body = (
+        METADATA
+        + "<Image"
+        + attrs
+        + ">"
+        + ("AAAA" if "location" in attrs else "")
+        + "</Image>"
+    )
+    with pytest.raises(XISFError, match="12.1.1"):
+        XISF(str(make_file(body)))
+
+
+def test_xisf_error_is_a_value_error(make_file):
+    """Callers already catching ValueError around XISF keep working."""
+    assert issubclass(XISFError, ValueError)
+    with pytest.raises(ValueError):
+        XISF(
+            str(
+                make_file(
+                    body_with_image(
+                        '<Property id="V:Bad" type="F64Vector"'
+                        ' location="inline:base64">AAAA</Property>'
+                    )
+                )
+            )
+        )
+
+
+def test_string_without_location_still_legal(make_file):
+    """A String may serialize its value directly, so it needs no location.
+
+    Guards the location check against over-reach: only data-block types must
+    carry a location.
+    """
+    path = make_file(body_with_image('<Property id="S:Ok" type="String">hello</Property>'))
+    with _no_warnings():
+        props = read_props(path)
+    assert props["S:Ok"]["value"] == "hello"
+
+
+def test_wellformed_properties_unaffected_by_validation(make_file):
+    """The validation must not reject valid properties."""
+    values = np.arange(6, dtype=np.float64).reshape(2, 3)
+    path = image_props(
+        make_file, vector_property_element(values) + matrix_property_element(values)
+    )
+    with _no_warnings():
+        props = read_props(path)
+    np.testing.assert_array_equal(props["F64Vector:Test"]["value"], values.ravel())
+    np.testing.assert_array_equal(props["F64Matrix:Test"]["value"], values)
 
 
 class _no_warnings:
