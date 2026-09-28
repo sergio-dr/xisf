@@ -13,7 +13,9 @@ a decoder does not recognize shall be ignored", so an attribute that is not
 valid for a type must not change how that property is decoded.
 """
 
+import struct
 import warnings
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
@@ -201,6 +203,98 @@ def test_boolean_property_unaffected(make_file, text, expected):
     with _no_warnings():
         props = read_props(path)
     assert props["B:Test"]["value"] is expected
+
+
+# --------------------------------------------------------------------------
+# Boolean serialization
+#   8.3.4  plain text is the word true or false; decoders shall also accept
+#           the integers 1 and 0
+#   8.3.5  leading and trailing white space must be ignored
+#   11.1.4 example: <Property id="HasData" type="Boolean" value="true" />
+# --------------------------------------------------------------------------
+
+
+def boolean_property_element(value):
+    return f'<Property id="B:Test" type="Boolean" value="{value}"/>'
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_boolean_roundtrip_through_writer(tmp_path, value):
+    """A Boolean property written by this package must read back unchanged.
+
+    Regression test: the writer serialized the value with str(), so True
+    became "True", while the reader compared against the lowercase "true". Every
+    True was therefore read back as False, and the file did not conform to
+    section 8.3.4.
+    """
+    path = tmp_path / "bool.xisf"
+    XISF.write(
+        str(path),
+        np.zeros((4, 6), dtype=np.uint16),
+        "test",
+        {"XISFProperties": {"B:Test": {"id": "B:Test", "type": "Boolean", "value": value}}},
+    )
+    with _no_warnings():
+        props = XISF(str(path)).get_images_metadata()[0]["XISFProperties"]
+    assert props["B:Test"]["value"] is value
+
+
+def test_boolean_written_in_lowercase(tmp_path):
+    """The serialized words shall be the lowercase true and false (8.3.4)."""
+    path = tmp_path / "bool.xisf"
+    for value, expected in ((True, "true"), (False, "false")):
+        XISF.write(
+            str(path),
+            np.zeros((4, 6), dtype=np.uint16),
+            "test",
+            {"XISFProperties": {"B:Test": {"id": "B:Test", "type": "Boolean", "value": value}}},
+        )
+        with open(path, "rb") as f:
+            assert f.read(8) == b"XISF0100"
+            header_len = struct.unpack("<I", f.read(4))[0]
+            f.read(4)  # reserved
+            header = ET.fromstring(f.read(header_len).decode())
+        element = [
+            e
+            for e in header.iter()
+            if e.tag.endswith("Property") and e.get("id") == "B:Test"
+        ][0]
+        assert element.get("value") == expected
+
+
+@pytest.mark.parametrize("text", ["true", "false", "True", "False", "TRUE", "FALSE"])
+def test_boolean_is_case_insensitive(make_file, text):
+    """The spec is silent on case, so any casing is accepted."""
+    path = make_file(body_with_image(boolean_property_element(text)))
+    with _no_warnings():
+        props = read_props(path)
+    assert props["B:Test"]["value"] is (text.lower() == "true")
+
+
+@pytest.mark.parametrize("text,expected", [("1", True), ("0", False)])
+def test_boolean_accepts_integers(make_file, text, expected):
+    """Decoders shall also accept the integers 1 and 0 (section 8.3.4)."""
+    path = make_file(body_with_image(boolean_property_element(text)))
+    with _no_warnings():
+        props = read_props(path)
+    assert props["B:Test"]["value"] is expected
+
+
+@pytest.mark.parametrize("text", ["  true  ", "\tfalse\n", " true"])
+def test_boolean_ignores_surrounding_whitespace(make_file, text):
+    """Leading and trailing white space must be ignored (section 8.3.5)."""
+    path = make_file(body_with_image(boolean_property_element(text)))
+    with _no_warnings():
+        props = read_props(path)
+    assert props["B:Test"]["value"] is (text.strip().lower() == "true")
+
+
+@pytest.mark.parametrize("text", ["yes", "no", "2", "", "truthy", "None", "0.0"])
+def test_malformed_boolean_is_reported(make_file, text):
+    """An undefined serialization is an error, not a silent False."""
+    path = make_file(body_with_image(boolean_property_element(text)))
+    with pytest.raises(XISFError, match="8.3.4"):
+        read_props(path)
 
 
 def test_timepoint_property_unaffected(make_file):

@@ -912,8 +912,7 @@ class XISF:
                 self._process_location_compression(p_dict)
                 p_dict["value"] = self._read_data_block(p_dict, p_et).decode("utf-8")
         elif p_dict["type"] == "Boolean":
-            # Boolean valid values are "true" and "false"
-            p_dict["value"] = p_dict["value"] == "true"
+            p_dict["value"] = self._parse_boolean(p_dict)
         elif "Vector" in p_dict["type"]:
             # A Vector property shall not have a value attribute (spec 11.1.8),
             # so it must be tested before the scalar fallback below
@@ -956,6 +955,33 @@ class XISF:
             p_dict = False
 
         return p_dict
+
+    @staticmethod
+    def _parse_boolean(p_dict):
+        """Return a Boolean property value as a Python bool.
+
+        A serialization of a Boolean value as plain text shall be one of the
+        words true and false, and decoders shall also accept the integers 1 and
+        0 as serializations of true and false, respectively (section 8.3.4).
+        Leading and trailing white space is irrelevant and must be ignored
+        (section 8.3.5).
+
+        The spec does not state whether the words are case-sensitive, so any
+        casing is accepted here. This is a superset of the defined forms and
+        keeps files written by other implementations, or by earlier versions of
+        this package, which serialized True as "True", readable.
+        """
+        raw = p_dict["value"].strip()
+        lowered = raw.lower()
+        if lowered == "true" or raw == "1":
+            return True
+        if lowered == "false" or raw == "0":
+            return False
+        raise XISFError(
+            f"Property {p_dict.get('id', '<unknown>')} of type Boolean has a"
+            f" malformed value {raw!r}: expected 'true' or 'false', or the"
+            f" integers 1 or 0 (required by the XISF 1.0 spec, section 8.3.4)"
+        )
 
     @staticmethod
     def _require_int_attr(p_dict, name, spec_section):
@@ -1014,14 +1040,19 @@ class XISF:
         if any(t in p_dict["type"] for t in scalars):
             # scalars and TimePoint
             # TODO add check for scalar or TimePoint
-            # TODO Boolean requires lowercase
+            # The Boolean literals are lowercase in the spec (section 11.1.4),
+            # but str(True) is "True", so they are formatted explicitly.
+            if p_dict["type"] == "Boolean":
+                value = "true" if p_dict["value"] else "false"
+            else:
+                value = str(p_dict["value"])
             ET.SubElement(
                 parent,
                 "Property",
                 {
                     "id": p_dict["id"],
                     "type": p_dict["type"],
-                    "value": str(p_dict["value"]),
+                    "value": value,
                 },
             )
         elif p_dict["type"] == "String":
