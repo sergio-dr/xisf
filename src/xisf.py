@@ -205,11 +205,35 @@ class XISF:
 
             fits_keywords = {}
             for a in image.findall("xisf:FITSKeyword", self._xml_ns):
-                fits_keywords.setdefault(a.attrib["name"], []).append(
-                    {
-                        "value": a.attrib["value"].strip("'").strip(" "),
-                        "comment": a.attrib["comment"],
-                    }
+                # The name, value and comment attributes are mandatory
+                # (section 11.6.1). An encoder must not produce a unit without
+                # them, but a decoder must keep the rest of the unit
+                # accessible, so a missing one is reported and defaulted here
+                # rather than raised.
+                name = self._validate_fits_keyword_name(
+                    a.attrib.get("name", ""), writing=False
+                )
+                value = a.attrib.get("value")
+                if value is None:
+                    if name not in self._fits_keywords_without_value:
+                        self._warn_fits_keyword(
+                            name,
+                            "value",
+                            "the value attribute is mandatory, so it is read as"
+                            " an empty string",
+                        )
+                    value = ""
+                comment = a.attrib.get("comment")
+                if comment is None:
+                    self._warn_fits_keyword(
+                        name,
+                        "comment",
+                        "the comment attribute is mandatory, so it is read as an"
+                        " empty string",
+                    )
+                    comment = ""
+                fits_keywords.setdefault(name, []).append(
+                    {"value": value.strip("'").strip(" "), "comment": comment}
                 )
 
             image_extended_meta = {
@@ -1152,16 +1176,139 @@ class XISF:
     # Insert FITS Keywords in the XML tree
     @staticmethod
     def _insert_fitskeyword(image_xml, keyword_name, keyword_values):
+        XISF._validate_fits_keyword_name(keyword_name, writing=True)
         for entry in keyword_values:
             ET.SubElement(
                 image_xml,
                 "FITSKeyword",
                 {
                     "name": keyword_name,
-                    "value": entry["value"],
-                    "comment": entry["comment"],
+                    "value": XISF._fits_keyword_value(keyword_name, entry),
+                    "comment": XISF._fits_keyword_comment(keyword_name, entry),
                 },
             )
+
+    # Keywords that have no value of their own, whose value attribute must
+    # therefore be an empty string rather than a meaningful value (section 11.6.1)
+    _fits_keywords_without_value = ("HISTORY", "COMMENT")
+
+    @staticmethod
+    def _validate_fits_keyword_name(name, writing):
+        """Check a FITS keyword name against the FITS standard, as quoted in 11.6.1.
+
+        A keyword name shall be a left justified, space-filled ASCII string with
+        no embedded spaces, in which all digits 0-9 and the upper case Latin
+        letters A-Z are permitted, together with the underscore and the hyphen;
+        lower case characters shall not be used. In FITSKeyword elements names
+        must not be padded with space characters.
+
+        Args:
+            name: the keyword name to check.
+            writing: True when encoding, False when decoding. An encoder shall
+                generate only conforming units, so an invalid name is an error.
+                A decoder must keep the rest of the unit accessible, so an
+                invalid name is reported as a warning and sanitized instead.
+
+        Returns:
+            The name to use. When writing this is the name unchanged. When
+            reading it is a sanitized name that conforms to the above, or the
+            original name if it cannot be repaired.
+        """
+        if not isinstance(name, str):
+            name = str(name)
+        if XISF._is_valid_fits_keyword_name(name):
+            return name
+
+        reason = (
+            f"{name!r} is not a valid FITS keyword name: names shall be at most"
+            f" 8 characters long, shall not be padded with spaces, and shall"
+            f" contain only the digits 0-9, the upper case letters A-Z, the"
+            f" underscore and the hyphen (required by the XISF 1.0 spec,"
+            f" section 11.6.1)"
+        )
+        if writing:
+            raise XISFError(reason)
+
+        # A decoder may not discard a keyword just because it is malformed, so
+        # the name is repaired as far as possible and reported.
+        sanitized = name.strip().upper()
+        sanitized = "".join(
+            c if (c.isascii() and (c.isalnum() or c in "_-")) else "_"
+            for c in sanitized
+        )
+        sanitized = sanitized[:8]
+        if sanitized and XISF._is_valid_fits_keyword_name(sanitized):
+            warnings.warn(
+                f"{reason} Reading it as {sanitized!r}", XISFWarning
+            )
+            return sanitized
+        warnings.warn(
+            f"{reason} It cannot be repaired, so the keyword is read with the"
+            f" name {name!r} unchanged.",
+            XISFWarning,
+        )
+        return name
+
+    @staticmethod
+    def _is_valid_fits_keyword_name(name):
+        if len(name) > 8 or not name:
+            return False
+        return all(
+            c.isascii() and (c.isdigit() or ("A" <= c <= "Z") or c in "_-")
+            for c in name
+        )
+
+    @staticmethod
+    def _fits_keyword_value(keyword_name, entry):
+        """Return the value attribute of a FITSKeyword element.
+
+        The value and the comment of a FITSKeyword element are mandatory, but a
+        missing one is recoverable: the keyword is still meaningful, so an empty
+        string is written in its place and the omission is reported. The
+        keywords HISTORY and COMMENT have no value of their own, whose value
+        attribute must be an empty string, so a missing value is expected there
+        and is not reported.
+        """
+        value = entry.get("value") if isinstance(entry, dict) else None
+        if value is None:
+            if keyword_name not in XISF._fits_keywords_without_value:
+                XISF._warn_fits_keyword(
+                    keyword_name,
+                    "value",
+                    "the value attribute is mandatory, so an empty string is used",
+                )
+            return ""
+        if not isinstance(value, str):
+            return str(value)
+        return value
+
+    @staticmethod
+    def _fits_keyword_comment(keyword_name, entry):
+        """Return the comment attribute of a FITSKeyword element.
+
+        As with the value, a missing mandatory comment is recovered with an
+        empty string and reported, since the keyword itself is still useful.
+        """
+        comment = entry.get("comment") if isinstance(entry, dict) else None
+        if comment is None:
+            XISF._warn_fits_keyword(
+                keyword_name,
+                "comment",
+                "the comment attribute is mandatory, so an empty string is used",
+            )
+            return ""
+        if not isinstance(comment, str):
+            return str(comment)
+        return comment
+
+    @staticmethod
+    def _warn_fits_keyword(keyword_name, attribute, consequence):
+        warnings.warn(
+            f"FITSKeyword {keyword_name!r} has no {attribute} attribute:"
+            f" {consequence} (the XISF 1.0 spec, section 11.6.1, makes it"
+            f" mandatory)",
+            XISFWarning,
+        )
 
     # Returns image geometry as a tuple, e.g. (x, y, channels) for a 2-D image
     @staticmethod

@@ -26,8 +26,11 @@ img_data = np.transpose(xisf.read_image(0), (2, 0, 1))
 print(f"Image dimensions: {img_data.shape}")
 
 img_meta = xisf.get_images_metadata()[0]
+if "ROWORDER" not in img_meta["FITSKeywords"]:
+    img_meta["FITSKeywords"]["ROWORDER"] = [{"value": "TOP-DOWN", "comment": "Order of the rows in image array"}]
+
 print("Header:")
-fits_header = [fits.Card("ROWORDER", "TOP-DOWN")]
+fits_header = []
 for keyword, values in img_meta["FITSKeywords"].items():
     for value in values:
         if keyword in ("COMMENT", "HISTORY"):
