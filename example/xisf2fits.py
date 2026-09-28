@@ -27,7 +27,7 @@ print(f"Image dimensions: {img_data.shape}")
 
 img_meta = xisf.get_images_metadata()[0]
 print("Header:")
-fits_header = []
+fits_header = [fits.Card("ROWORDER", "TOP-DOWN")]
 for keyword, values in img_meta["FITSKeywords"].items():
     for value in values:
         if keyword in ("COMMENT", "HISTORY"):
