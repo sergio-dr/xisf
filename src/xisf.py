@@ -468,21 +468,31 @@ class XISF:
         return im_data
 
     @staticmethod
-    def read(fname, n=0, image_metadata={}, xisf_metadata={}):
+    def read(fname, n=0, image_metadata=None, xisf_metadata=None):
         """Convenience method for reading a file containing a single image.
 
         Args:
             fname (string): filename
             n (int, optional): index of the image to extract (in the list returned by get_images_metadata()). Defaults to 0.
             image_metadata (dict, optional): dictionary that will be updated with the metadata of the image.
+              If None, the image metadata is not collected, since the caller has
+              nowhere to receive it. Defaults to None.
             xisf_metadata (dict, optional): dictionary that will be updated with the metadata of the file.
+              If None, the file metadata is not collected, since the caller has
+              nowhere to receive it. Defaults to None.
 
         Returns:
             [np.ndarray]: Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
         """
         xisf = XISF(fname)
-        xisf_metadata.update(xisf.get_file_metadata())
-        image_metadata.update(xisf.get_images_metadata()[n])
+        # These are only output parameters, so there is nothing to collect into
+        # when the caller has not provided a dictionary. Their previous default
+        # was a shared mutable dict, which accumulated the metadata of every
+        # file read without ever being visible to the caller.
+        if xisf_metadata is not None:
+            xisf_metadata.update(xisf.get_file_metadata())
+        if image_metadata is not None:
+            image_metadata.update(xisf.get_images_metadata()[n])
         return xisf.read_image(n)
 
     # if 'colorSpace' is not specified, im_data.shape[2] dictates if colorSpace is 'Gray' or 'RGB'

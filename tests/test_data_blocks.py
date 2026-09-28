@@ -6,6 +6,8 @@ and hex encodings of section 10.3, and the placement of the compression
 attribute required by section 10.6.
 """
 
+import inspect
+
 import numpy as np
 import pytest
 
@@ -271,6 +273,51 @@ def test_write_read_roundtrip(tmp_path, codec, shuffle):
     path = tmp_path / f"rt_{codec}_{shuffle}.xisf"
     XISF.write(str(path), im, codec=codec, shuffle=shuffle)
     np.testing.assert_array_equal(XISF.read(str(path)), im)
+
+
+def test_read_has_no_mutable_default_arguments():
+    """Regression test: mutable {} defaults accumulated state across calls.
+
+    The dicts are only output parameters, so with a shared default every call
+    updated a dict that was created once at definition time. The metadata of
+    every file read piled up in it, invisible to the caller who passed nothing.
+    """
+    defaults = [p.default for p in inspect.signature(XISF.read).parameters.values()]
+    assert all(d is None for d in defaults[2:]), defaults
+
+
+def test_read_does_not_collect_metadata_when_not_asked(tmp_path):
+    """With no dicts passed there is nowhere to put the metadata, so skip it."""
+    path = tmp_path / "a.xisf"
+    XISF.write(str(path), sample_image())
+    # must not raise, and must not touch any shared state
+    np.testing.assert_array_equal(XISF.read(str(path)), sample_image())
+
+
+def test_read_collects_only_the_image_metadata(tmp_path):
+    """Passing one dict must still work, and must fill that one."""
+    path = tmp_path / "a.xisf"
+    XISF.write(str(path), sample_image())
+    im_meta = {}
+    XISF.read(str(path), image_metadata=im_meta)
+    assert "geometry" in im_meta
+
+
+def test_read_collects_only_the_file_metadata(tmp_path):
+    path = tmp_path / "a.xisf"
+    XISF.write(str(path), sample_image())
+    x_meta = {}
+    XISF.read(str(path), xisf_metadata=x_meta)
+    assert "XISF:CreatorModule" in x_meta
+
+
+def test_read_fills_both_dicts_when_both_given(tmp_path):
+    path = tmp_path / "a.xisf"
+    XISF.write(str(path), sample_image(), "test")
+    im_meta, x_meta = {}, {}
+    XISF.read(str(path), image_metadata=im_meta, xisf_metadata=x_meta)
+    assert im_meta["geometry"] == XISF(str(path)).get_images_metadata()[0]["geometry"]
+    assert "XISF:CreatorModule" in x_meta
 
 
 def test_public_metadata_dicts_have_no_private_keys(tmp_path):

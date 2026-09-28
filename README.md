@@ -200,7 +200,7 @@ Extracts an image from a XISF object.
 
 ```python
 @staticmethod
-def read(fname, n=0, image_metadata={}, xisf_metadata={})
+def read(fname, n=0, image_metadata=None, xisf_metadata=None)
 ```
 
 Convenience method for reading a file containing a single image.
@@ -209,8 +209,8 @@ Convenience method for reading a file containing a single image.
 
 - `fname` _string_ - filename
 - `n` _int, optional_ - index of the image to extract (in the list returned by get_images_metadata()). Defaults to 0.
-- `image_metadata` _dict, optional_ - dictionary that will be updated with the metadata of the image.
-- `xisf_metadata` _dict, optional_ - dictionary that will be updated with the metadata of the file.
+- `image_metadata` _dict, optional_ - dictionary that will be updated with the metadata of the image. If None, the image metadata is not collected, since the caller has nowhere to receive it. Defaults to None.
+- `xisf_metadata` _dict, optional_ - dictionary that will be updated with the metadata of the file. If None, the file metadata is not collected, since the caller has nowhere to receive it. Defaults to None.
   
 
 **Returns**:
