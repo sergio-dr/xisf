@@ -39,8 +39,23 @@ def sample_image(channels=3, width=6, height=4, dtype=np.uint16):
 
 
 def planar_bytes(im):
-    """Serialize a channels-last image the way XISF stores it: planar."""
+    """Serialize a channels-last image the way XISF stores it: planar.
+
+    In the planar model each channel is a contiguous run of samples and the
+    channels follow in increasing index order (spec 8.5.3.1), which is the
+    memory order of a C-contiguous (channels, height, width) array.
+    """
     return np.ascontiguousarray(np.transpose(im, (2, 0, 1))).tobytes()
+
+
+def normal_bytes(im):
+    """Serialize a channels-last image the way XISF stores it: normal.
+
+    In the normal model all samples are contiguous, with the samples of each
+    pixel stored together in increasing channel order (spec 8.5.3.2), which is
+    the memory order of a C-contiguous (height, width, channels) array.
+    """
+    return np.ascontiguousarray(im).tobytes()
 
 
 def color_space(channels):
@@ -69,16 +84,32 @@ def encode_block(raw, encoding="base64", codec=None, item_size=None):
     raise ValueError(encoding)
 
 
-def image_element(im, location="inline", encoding="base64", codec=None, item_size=None):
-    """Build an <Image> element with an inline or embedded data block."""
+def image_element(
+    im, location="inline", encoding="base64", codec=None, item_size=None,
+    pixel_storage=None,
+):
+    """Build an <Image> element with an inline or embedded data block.
+
+    pixel_storage selects the storage model, 'Planar' (the spec default) or
+    'Normal'. When None the attribute is omitted so that the spec default applies.
+    """
     h, w, c = im.shape
+    if pixel_storage is None:
+        raw, storage_attr = planar_bytes(im), ""
+    elif pixel_storage == "Planar":
+        raw, storage_attr = planar_bytes(im), ' pixelStorage="Planar"'
+    elif pixel_storage == "Normal":
+        raw, storage_attr = normal_bytes(im), ' pixelStorage="Normal"'
+    else:
+        raise ValueError(pixel_storage)
     text, compression = encode_block(
-        planar_bytes(im), encoding=encoding, codec=codec, item_size=item_size
+        raw, encoding=encoding, codec=codec, item_size=item_size
     )
     attrs = (
         f'geometry="{w}:{h}:{c}" '
         f'sampleFormat="{XISF._get_sampleFormat(np.dtype(im.dtype))}" '
         f'colorSpace="{color_space(c)}"'
+        f"{storage_attr}"
     )
     if location == "inline":
         loc = f"inline:{encoding}"

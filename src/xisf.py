@@ -229,6 +229,14 @@ class XISF:
                     image.attrib["compression"]
                 )
 
+            # pixelStorage is optional, and the default for an Image element
+            # without it is the planar model (spec 11.5.2). A baseline decoder
+            # shall read pixel data in both the planar and normal models
+            # (spec 7.2), so it is recorded here for read_image to honor.
+            image_extended_meta["pixelStorage"] = image.attrib.get(
+                "pixelStorage", "Planar"
+            )
+
             # Merge basic and extended metadata in a dict
             image_meta = {**image_basic_meta, **image_extended_meta}
 
@@ -266,7 +274,7 @@ class XISF:
         It outputs a dictionary m_i for each image, with the following structure:
         ```
         m_i = {
-            'geometry': (width, height, channels), # only 2D images (with multiple channels) are supported
+            'geometry': (dim1, ..., dimN, channels), # N >= 1; the trailing item is always the channel count
             'location': (pos, size), # used internally in read_image()
             'dtype': np.dtype('...'), # derived from sampleFormat argument
             'compression': (codec, uncompressed_size, item_size), # optional
@@ -384,13 +392,20 @@ class XISF:
     def read_image(self, n=0, data_format="channels_last"):
         """Extracts an image from a XISF object.
 
+        Images of any dimensionality N >= 1 are supported. The geometry attribute
+        is dim1:...:dimN:channel-count, so the trailing item is always the channel
+        count and never a spatial dimension (spec 11.5.1).
+
         Args:
             n: index of the image to extract in the list returned by get_images_metadata()
             data_format: channels axis can be 'channels_first' or 'channels_last' (as used in
             keras/tensorflow, pyplot's imshow, etc.), 0 by default.
 
         Returns:
-            Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
+            Numpy ndarray with the image data, in the requested format
+            (channels_first or channels_last). The shape is (dim1, ..., dimN,
+            channels) for channels_last and (channels, dim1, ..., dimN) for
+            channels_first.
 
         """
         try:
@@ -405,18 +420,28 @@ class XISF:
                     f"Requested image #{n}, valid range is [0..{len(self._images_meta) - 1}]"
                 ) from e
 
-        try:
-            # Assumes *two*-dimensional images (chc=channel count)
-            w, h, chc = meta["geometry"]
-        except ValueError as e:
-            raise NotImplementedError(
-                f"Assumed 2D channels (width, height, channels), found {meta['geometry']} geometry"
-            )
+        # geometry is dim1:...:dimN:channel-count, so the channel count is the
+        # trailing item and the spatial dimensions precede it (spec 11.5.1). dim1
+        # is the X-axis, which is the last numpy axis, so the spatial dimensions
+        # are reversed back into numpy array order.
+        geometry = meta["geometry"]
+        channels = geometry[-1]
+        dims = geometry[:-1][::-1]
 
         data = self._read_data_block(meta, self._images_xml[n])
         im_data = np.frombuffer(data, dtype=meta["dtype"])
-        im_data = im_data.reshape((chc, h, w))
-        return np.transpose(im_data, (1, 2, 0)) if data_format == "channels_last" else im_data
+        # Decode according to the pixel storage model: planar stores each channel
+        # as a contiguous run of samples, while normal stores the samples of each
+        # pixel together (spec 8.5.3). The default is the planar model
+        # (spec 11.5.2). Both are read as (channels, *dims) here, since that is
+        # the memory order the two models have in common.
+        if meta.get("pixelStorage", "Planar") == "Planar":
+            im_data = im_data.reshape((channels, *dims))
+        else:
+            im_data = np.moveaxis(im_data.reshape((*dims, channels)), -1, 0)
+        if data_format == "channels_last":
+            im_data = np.moveaxis(im_data, 0, -1)
+        return im_data
 
     @staticmethod
     def read(fname, n=0, image_metadata={}, xisf_metadata={}):
@@ -437,6 +462,128 @@ class XISF:
         return xisf.read_image(n)
 
     # if 'colorSpace' is not specified, im_data.shape[2] dictates if colorSpace is 'Gray' or 'RGB'
+    @staticmethod
+    def _resolve_image_data(im_data, pixel_storage=None):
+        """Split an image array into its spatial dimensions and channel count.
+
+        The XISF geometry attribute is dim1:...:dimN:channel-count, where N >= 1
+        is the dimensionality of the image and the channel count is always a
+        separate trailing item, never one of the dimensions (spec 11.5.1). A
+        numpy array carries no such distinction, so the channel axis is inferred:
+
+        Args:
+            im_data: an array of at least one dimension. A 1-D or 2-D array is
+                always single-channel. A 3-D array is taken as
+                (dim1, dim2, channels) for the normal model when the trailing
+                axis is 1 or 3, otherwise as (channels, dim1, dim2) for the
+                planar model when the leading axis is 1 or 3, and otherwise as
+                three single-channel dimensions. An array of four or more axes
+                is always taken as purely spatial.
+            pixel_storage: 'normal', 'planar', or None to infer the layout from
+                the shape. When given explicitly, the array must be at least
+                2-D, and its channel axis is the trailing axis for 'normal' or
+                the leading axis for 'planar'.
+
+        Returns:
+            The spatial dimension lengths, the channel count, and the storage
+            model assumed for the input. The array is not transposed here; the
+            caller reorders it with _reorder_to_dims.
+        """
+        if not isinstance(im_data, np.ndarray):
+            raise XISFError(
+                f"im_data must be a numpy ndarray, got {type(im_data).__name__}"
+            )
+        if im_data.ndim < 1:
+            # geometry is dim1:...:dimN:channel-count with N >= 1, so an image
+            # must have at least one dimension besides its channel count
+            raise XISFError(
+                f"im_data must have at least one dimension, got a 0-D array"
+            )
+        if 0 in im_data.shape:
+            # every dimi item shall be greater than zero (spec 11.5.1)
+            raise XISFError(
+                f"Every geometry dimension shall be greater than zero (spec"
+                f" 11.5.1), got an array of shape {im_data.shape}"
+            )
+
+        if pixel_storage is None:
+            if im_data.ndim == 3:
+                if im_data.shape[2] in (1, 3):
+                    # Retain the historical inference so existing callers are
+                    # unaffected: a trailing 1 or 3 is the channel count.
+                    return im_data.shape[:2], im_data.shape[2], "normal"
+                if im_data.shape[0] in (1, 3):
+                    return im_data.shape[1:], im_data.shape[0], "planar"
+            # One or two axes, or an array with no axis that could plausibly be
+            # a channel count, is a single-channel image of that dimensionality.
+            return im_data.shape, 1, "planar"
+
+        if not isinstance(pixel_storage, str):
+            raise XISFError(
+                f"pixel_storage must be 'planar' or 'normal', got"
+                f" {pixel_storage!r}"
+            )
+        pixel_storage = pixel_storage.lower()
+
+        if pixel_storage == "normal":
+            if im_data.ndim < 2:
+                raise XISFError(
+                    f"pixel_storage='normal' expects a trailing channel axis, so"
+                    f" im_data must have at least two dimensions, got shape"
+                    f" {im_data.shape}"
+                )
+            return im_data.shape[:-1], im_data.shape[-1], "normal"
+        if pixel_storage == "planar":
+            if im_data.ndim < 2:
+                raise XISFError(
+                    f"pixel_storage='planar' expects a leading channel axis, so"
+                    f" im_data must have at least two dimensions, got shape"
+                    f" {im_data.shape}"
+                )
+            return im_data.shape[1:], im_data.shape[0], "planar"
+        raise XISFError(
+            f"pixel_storage must be 'planar' or 'normal', got {pixel_storage!r}"
+        )
+
+    @staticmethod
+    def _reorder_to_dims(im_data, dims, channels, storage):
+        """Reorder an image array to (channels, *dims) as the planar model stores it.
+
+        In the planar model each channel is stored as a contiguous sequence of
+        pixel samples, and channels are stored consecutively in increasing order
+        of channel index (spec 8.5.3.1). The samples of a channel are stored in
+        pixel coordinate order with the first coordinate varying fastest, which
+        is exactly the memory order of a C-contiguous (channels, *dims) array.
+
+        Args:
+            im_data: the input array.
+            dims: spatial dimension lengths, in axis order.
+            channels: the channel count.
+            storage: 'normal' for a trailing channel axis, 'planar' for a leading one.
+        """
+        if storage == "normal":
+            # move the trailing channel axis to the front
+            im_data = np.moveaxis(im_data, -1, 0)
+        return np.ascontiguousarray(im_data).reshape((channels, *dims))
+
+    @staticmethod
+    def _color_space_for_channels(channels):
+        """Return the XISF colorSpace literal for a channel count.
+
+        Table 14 in spec 11.5.2 defines the permitted color spaces as Gray, RGB
+        and Lab, all of which are either one or three channels, so no colorSpace
+        literal exists for any other channel count.
+        """
+        if channels == 1:
+            return "Gray"
+        if channels == 3:
+            return "RGB"
+        raise XISFError(
+            f"Cannot write an image with {channels} channels: the XISF 1.0 spec"
+            f" defines color spaces for one (Gray) or three (RGB, Lab) channels"
+            f" only (section 11.5.2, Table 14)"
+        )
+
     # For float sample formats, bounds="0:1" is assumed
     @staticmethod
     def write(
@@ -448,13 +595,19 @@ class XISF:
         codec=None,
         shuffle=False,
         level=None,
+        pixel_storage=None,
     ):
         """Writes an image (numpy array) to a XISF file. Compression may be requested but it only
         will be used if it actually reduces the data size.
 
         Args:
             fname: filename (will overwrite if existing)
-            im_data: numpy ndarray with the image data
+            im_data: numpy ndarray with the image data. Arrays of any dimensionality
+              N >= 1 are written, with the geometry written as
+              dim1:...:dimN:channel-count (spec 11.5.1). A 1-D or 2-D array is
+              single-channel. A 3-D array is interpreted according to pixel_storage, so
+              pass it explicitly if the shape is ambiguous. An array of four or more axes
+              is written as purely spatial dimensions.
             creator_app: string for XISF:CreatorApplication file property (defaults to python version in None provided)
             image_metadata: dict with the same structure described for m_i in get_images_metadata().
               Only 'FITSKeywords' and 'XISFProperties' keys are actually written, the rest are derived from im_data.
@@ -464,10 +617,21 @@ class XISF:
               for 'lz4' ,'lz4hc' and 'zstd' compression algorithms.
             level: for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9); for zstd, 1..22 (default: 3).
               Higher means more compression.
+            pixel_storage: pixel storage model of im_data, using the spec naming
+              (spec 8.5.3). 'planar' (channels first) means a (channels, *dims) array,
+              which is the 'channels_first' layout used by keras and TensorFlow;
+              'normal' (channels last) means a (*dims, channels) array, which is the
+              'channels_last' layout used by numpy, matplotlib and most image tooling.
+              When given, im_data must have at least two dimensions and the channel
+              count is the leading axis for 'planar' or the trailing axis for 'normal'.
+              Defaults to None, which infers the layout from the shape: a 3-D array
+              with a trailing dimension of 1 or 3 is read as (dim1, dim2, channels),
+              one with a leading dimension of 1 or 3 as (channels, dim1, dim2), and
+              anything else is treated as single-channel spatial dimensions.
         Returns:
             bytes_written: the total number of bytes written into the output file.
             codec: The codec actually used, i.e., None if compression did not reduce the data block size so
-            compression was not finally used.
+              compression was not finally used.
 
         """
         if image_metadata is None:
@@ -485,29 +649,34 @@ class XISF:
             "XISF:MaxInlineBlockSize", {"value": XISF._max_inline_block_size}
         )["value"]
 
+        # Split the array into spatial dimensions and a channel count before any
+        # metadata is derived from it, so that geometry and the data block always
+        # agree (spec 11.5.1: geometry is dim1:...:dimN:channel-count, N >= 1)
+        dims, channels, input_storage = XISF._resolve_image_data(im_data, pixel_storage)
+        im_data = XISF._reorder_to_dims(im_data, dims, channels, input_storage)
+        # geometry is dim1:...:dimN:channel-count (spec 11.5.1), where dim1 is the
+        # X-axis and dimN the Y-axis for a 2-D image. A numpy array is indexed
+        # rows-first, so dim1 is the *last* array axis. The spatial dimensions are
+        # therefore emitted in reverse array order, and the data block keeps the
+        # array order, in which the first array axis varies fastest.
+        geometry = ":".join(str(dim) for dim in (*reversed(dims), channels))
+
         # Prepare basic image metadata
-        def _create_image_metadata(im_data, id):
+        def _create_image_metadata(id):
             image_attrs = {"id": id}
-            if im_data.shape[2] == 3 or im_data.shape[2] == 1:
-                data_format = "channels_last"
-                geometry = (im_data.shape[1], im_data.shape[0], im_data.shape[2])
-                channels = im_data.shape[2]
-            else:
-                data_format = "channels_first"
-                geometry = im_data.shape
-                channels = im_data.shape[0]
-            image_attrs["geometry"] = "%d:%d:%d" % geometry
-            image_attrs["colorSpace"] = "Gray" if channels == 1 else "RGB"
+            image_attrs["geometry"] = geometry
+            image_attrs["colorSpace"] = XISF._color_space_for_channels(channels)
+            # A baseline encoder shall write pixel data in the planar storage
+            # model (spec 7.1). It is also the default a decoder assumes when the
+            # attribute is absent (spec 11.5.2), but it is written explicitly so
+            # that the model is never ambiguous.
+            image_attrs["pixelStorage"] = "Planar"
             image_attrs["sampleFormat"] = XISF._get_sampleFormat(im_data.dtype)
             if image_attrs["sampleFormat"].startswith("Float"):
                 image_attrs["bounds"] = "0:1"  # Assumed
             if sys.byteorder == "big" and image_attrs["sampleFormat"] != "UInt8":
                 image_attrs["byteOrder"] = "big"
-            return image_attrs, data_format
-
-        # Rearrange ndarray for data_format and serialize to bytes
-        def _prepare_image_data_block(im_data, data_format):
-            return np.transpose(im_data, (2, 0, 1)) if data_format == "channels_last" else im_data
+            return image_attrs
 
         # Serialize a data block, with optional compression (i.e., when codec is not None)
         # Compression will be only applied if effectively reduces size
@@ -643,8 +812,7 @@ class XISF:
 
         # __/ Prepare image and its metadata \__________
         im_id = image_metadata.get("id", "image")
-        im_attrs, data_format = _create_image_metadata(im_data, im_id)
-        im_data = _prepare_image_data_block(im_data, data_format)
+        im_attrs = _create_image_metadata(im_id)
         im_data_block, data_size, codec_str = _serialize_data_block(
             im_data, im_attrs, codec, level, shuffle
         )
@@ -964,10 +1132,24 @@ class XISF:
                 },
             )
 
-    # Returns image shape, e.g. (x, y, channels)
+    # Returns image geometry as a tuple, e.g. (x, y, channels) for a 2-D image
     @staticmethod
     def _parse_geometry(g):
-        return tuple(map(int, g.split(":")))
+        geometry = tuple(map(int, g.split(":")))
+        if len(geometry) < 2:
+            # geometry is dim1:...:dimN:channel-count with N >= 1, so a valid
+            # geometry has at least one dimension plus the channel count
+            raise XISFError(
+                f"Invalid geometry {g!r}: expected dim1:...:dimN:channel-count"
+                f" with N >= 1 (spec 11.5.1)"
+            )
+        if 0 in geometry:
+            # every dimi item shall be greater than zero (spec 11.5.1)
+            raise XISFError(
+                f"Invalid geometry {g!r}: every dimension and the channel count"
+                f" shall be greater than zero (spec 11.5.1)"
+            )
+        return geometry
 
     # Returns ("attachment", position, size), ("inline", encoding) or ("embedded")
     @staticmethod
