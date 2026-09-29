@@ -152,7 +152,10 @@ class XISF:
               made available and XISFError is raised; set to False to downgrade
               the failure to an XISFWarning and return the data anyway. Passing
               False does not disable the check that a compressed block is never
-              decompressed after a failed verification (spec 10.6.1).
+              decompressed after a failed verification (spec 10.6.1): a block
+              that declares both a compression and a checksum that does not
+              match always raises XISFError, because decompressing data known
+              to be altered returns wrong pixels without reporting an error.
 
         Returns:
             XISF object.
@@ -452,6 +455,17 @@ class XISF:
         available to the caller. This is called on the serialized block, before
         decompression, so that altered compressed data is never decompressed
         (spec 10.6.1).
+
+        A block that fails verification is normally returned anyway when the
+        object was opened with verify_checksums=False, since an uncompressed
+        block is inert and the user has asked to see the data regardless. That
+        is not possible for a compressed block: a failed digest means the bytes
+        are altered, and decompressing altered data is how a decoder ends up
+        returning silently wrong pixels. lz4 and zstd in particular decompress
+        a corrupt block without raising, and zlib raises an error that says
+        nothing about checksums. A mismatch on a compressed block is therefore
+        always an error, whatever verify_checksums is set to, and the flag only
+        governs whether the failure of an uncompressed block is fatal.
         """
         if "checksum" not in elem:
             return
@@ -466,6 +480,13 @@ class XISF:
             f" (XISF 1.0 spec, section 10.5)"
         )
         if not self._verify_checksums:
+            if "compression" in elem:
+                raise XISFError(
+                    f"{message}. Its data block is compressed, and decompressing"
+                    f" data that is known to be altered would return wrong pixels"
+                    f" without reporting an error, so this is not returned"
+                    f" despite verify_checksums=False"
+                )
             warnings.warn(
                 f"{message}. Returning the data anyway, since this XISF object"
                 f" was opened with verify_checksums=False",

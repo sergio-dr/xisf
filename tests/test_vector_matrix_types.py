@@ -13,13 +13,16 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 
-from xisf import XISF, XISFWarning
+from xisf import XISF, XISFError, XISFWarning
 
 from .conftest import (
     METADATA,
+    COMPRESSORS,
+    attached_image,
     matrix_property_element,
     sample_image,
     vector_property_element,
+    write_monolithic,
 )
 
 # Element type of every type name of spec 8.4.4.5 Table 7 (vectors) and 8.4.4.6
@@ -324,3 +327,111 @@ def test_vector_matrix_dtypes_cover_the_required_element_types():
                    "F32", "F64"):
         assert XISF._parse_vector_matrix_dtype(prefix + "Vector") is not None
         assert XISF._parse_vector_matrix_dtype(prefix + "Matrix") is not None
+
+
+# --------------------------------------------------------------------------
+# Compressed data blocks
+# --------------------------------------------------------------------------
+
+CODECS = [None, "zlib", "lz4", "lz4hc", "zstd"]
+LOCATIONS = ["inline", "embedded"]
+# The item size of a byte-shuffled F64 block, which is the element size
+ITEM_SIZE = 8
+VALUES = np.array([1.5, -2.5, 3.25, 4.0, 5.5, 6.75, 7.0, 8.25], dtype="float64")
+
+
+def file_with_property(path, element, attached=b""):
+    """A file whose Metadata holds the one property element."""
+    write_monolithic(
+        path, METADATA[: -len("</Metadata>")] + element + "</Metadata>", attached
+    )
+    return str(path)
+
+
+def file_with_attached_property(path, ptype, shape_attrs, arr, codec, checksum=None):
+    """A file whose Metadata holds a property in an attached compressed block.
+
+    The offset of an attached block is only known once the header is sized, so
+    it is measured with an empty body first. Attached blocks are aligned to
+    4096 bytes, so the offset does not move once the real header is written, as
+    long as the header stays under one block.
+    """
+    block = COMPRESSORS[codec](arr.tobytes())
+    offset = write_monolithic(path, "", attached=block)
+    attrs = "".join(f' {k}="{v}"' for k, v in shape_attrs.items())
+    digest = f' checksum="sha-1:{checksum}"' if checksum else ""
+    element = (
+        f'<Property id="P" type="{ptype}"{attrs} compression="{codec}:{arr.nbytes}"'
+        f'{digest} location="attachment:{offset}:{len(block)}" />'
+    )
+    return file_with_property(path, element, attached=block)
+
+
+@pytest.mark.parametrize("codec", CODECS)
+@pytest.mark.parametrize("location", LOCATIONS)
+@pytest.mark.parametrize("shuffled", [False, True])
+def test_compressed_vector_is_read(make_file, codec, location, shuffled):
+    """A Vector property shall be read from a compressed data block."""
+    element = vector_property_element(
+        VALUES,
+        ptype="F64Vector",
+        location=location,
+        codec=codec,
+        item_size=ITEM_SIZE if shuffled else None,
+    )
+    prop = XISF(file_with_property(make_file(element), element)).get_file_metadata()[
+        "F64Vector:Test"
+    ]
+    assert prop["value"].dtype == np.dtype("float64")
+    assert np.array_equal(prop["value"], VALUES)
+
+
+@pytest.mark.parametrize("codec", CODECS)
+@pytest.mark.parametrize("location", LOCATIONS)
+@pytest.mark.parametrize("shuffled", [False, True])
+def test_compressed_matrix_is_read(make_file, codec, location, shuffled):
+    """A Matrix property shall be read from a compressed data block."""
+    arr = VALUES.reshape(4, 2)
+    element = matrix_property_element(
+        arr,
+        ptype="F64Matrix",
+        location=location,
+        codec=codec,
+        item_size=ITEM_SIZE if shuffled else None,
+    )
+    prop = XISF(file_with_property(make_file(element), element)).get_file_metadata()[
+        "F64Matrix:Test"
+    ]
+    assert prop["value"].dtype == np.dtype("float64")
+    assert prop["value"].shape == (4, 2)
+    assert np.array_equal(prop["value"], arr)
+
+
+@pytest.mark.parametrize("codec", [c for c in CODECS if c])
+def test_attached_compressed_vector_is_read(tmp_path, codec):
+    """A Vector property shall be read from an attached compressed block."""
+    path = file_with_attached_property(
+        tmp_path / f"a-{codec}.xisf",
+        "F64Vector",
+        {"length": VALUES.size},
+        VALUES,
+        codec,
+    )
+    prop = XISF(path).get_file_metadata()["P"]
+    assert np.array_equal(prop["value"], VALUES)
+
+
+@pytest.mark.parametrize("codec", [c for c in CODECS if c])
+def test_attached_compressed_matrix_is_read(tmp_path, codec):
+    """A Matrix property shall be read from an attached compressed block."""
+    arr = VALUES.reshape(4, 2)
+    path = file_with_attached_property(
+        tmp_path / f"a-{codec}.xisf",
+        "F64Matrix",
+        {"rows": 4, "columns": 2},
+        arr,
+        codec,
+    )
+    prop = XISF(path).get_file_metadata()["P"]
+    assert prop["value"].shape == (4, 2)
+    assert np.array_equal(prop["value"], arr)

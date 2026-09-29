@@ -32,6 +32,18 @@ ALGORITHMS = {
 MANDATORY = ("sha-1", "sha-256", "sha-512")
 
 
+def smooth_image(seed=8, side=64):
+    """An image every codec can actually compress.
+
+    A writer that gains nothing from compression discards the compressed block
+    and writes the data uncompressed (see _serialize_data_block), so a test that
+    needs a compressed block cannot use random data: a codec that does not
+    reduce the size leaves no compression attribute behind.
+    """
+    ramp = np.linspace(0, 1, side, dtype=np.float32)
+    return np.stack(np.meshgrid(ramp, ramp, ramp[:side], indexing="ij"), axis=-1)
+
+
 def build_file(path, im, image_attrs="", property_xml=None, image_text=None):
     """Write an XISF file with a hand-built header and no attached blocks.
 
@@ -253,9 +265,11 @@ def test_compressed_block_is_not_decompressed_after_failure(tmp_path):
     raw[pos] ^= 0xFF
     (tmp_path / "corrupt.xisf").write_bytes(bytes(raw))
 
-    # A decompression error would mean the altered bytes reached the codec.
-    # Either way the block must not be handed to the caller.
-    with pytest.raises((XISFError, Exception)) as exc:
+    # A decompression error would mean the altered bytes reached the codec, so
+    # the exception has to be the checksum failure and not a codec error. The
+    # message is checked for the same reason: the codecs disagree about what a
+    # corrupt block does, and a broad exception type would not tell them apart.
+    with pytest.raises(XISFError) as exc:
         XISF(str(tmp_path / "corrupt.xisf")).read_image(0)
     assert "fails checksum verification" in str(exc.value)
 
@@ -437,3 +451,70 @@ def test_write_read_round_trip_is_lossless(tmp_path):
     path = tmp_path / "rt.xisf"
     XISF.write(str(path), im, "t", pixel_storage="normal")
     np.testing.assert_array_equal(XISF(str(path)).read_image(0), im)
+
+
+# --------------------------------------------------------------------------
+# A failed verification of a compressed block is always fatal
+# --------------------------------------------------------------------------
+
+
+def test_verify_checksums_false_still_refuses_a_corrupt_compressed_block(tmp_path):
+    """The opt-out does not extend to a compressed block.
+
+    Decompressing bytes that are known to be altered returns wrong pixels
+    without reporting anything, since lz4 and zstd decompress a corrupt block
+    silently, so a mismatch on a compressed block raises whatever the flag says.
+    """
+    im = smooth_image()
+    path = tmp_path / "comp.xisf"
+    XISF.write(str(path), im, "t", codec="lz4", checksum="sha-256")
+    assert "compression" in header_of(path), "the block must actually be compressed"
+
+    raw = bytearray(path.read_bytes())
+    pos, _ = map(int, re.search(r'location="attachment:(\d+):(\d+)"', header_of(path)).groups())
+    raw[pos] ^= 0xFF
+    corrupt = tmp_path / "corrupt.xisf"
+    corrupt.write_bytes(bytes(raw))
+
+    with pytest.raises(XISFError) as exc:
+        XISF(str(corrupt), verify_checksums=False).read_image(0)
+    message = str(exc.value)
+    assert "fails checksum verification" in message
+    assert "compressed" in message
+    assert "verify_checksums=False" in message
+
+
+@pytest.mark.parametrize("codec", ["zlib", "lz4", "lz4hc", "zstd"])
+def test_every_codec_is_refused_after_a_failed_verification(tmp_path, codec):
+    """No codec is allowed to decompress a block that failed verification.
+
+    The codecs do not agree on what a corrupt block does: zlib raises a
+    decompression error, and lz4 and zstd return silently wrong bytes. Refusing
+    before the codec is reached makes the outcome the same for all of them.
+    """
+    im = smooth_image()
+    path = tmp_path / f"{codec}.xisf"
+    XISF.write(str(path), im, "t", codec=codec)
+    # A codec that cannot reduce the size is not used, and then the block is not
+    # compressed, so this test would not be testing what it claims to
+    assert "compression" in header_of(path), f"{codec} did not compress the block"
+
+    raw = bytearray(path.read_bytes())
+    pos, _ = map(int, re.search(r'location="attachment:(\d+):(\d+)"', header_of(path)).groups())
+    raw[pos + 4] ^= 0xFF
+    corrupt = tmp_path / f"corrupt-{codec}.xisf"
+    corrupt.write_bytes(bytes(raw))
+
+    with pytest.raises(XISFError, match="fails checksum verification"):
+        XISF(str(corrupt), verify_checksums=False).read_image(0)
+
+
+def test_uncompressed_block_is_still_returned_with_the_opt_out(tmp_path):
+    """The opt-out keeps working for a block that is not compressed."""
+    im = np.arange(12, dtype=np.uint8).reshape(2, 6)
+    path = build_file(
+        tmp_path / "bad.xisf", im, image_attrs=f' checksum="{sha1(b"wrong")}"'
+    )
+    with pytest.warns(XISFWarning, match="fails checksum verification"):
+        back = XISF(str(path), verify_checksums=False).read_image(0)
+    np.testing.assert_array_equal(back[..., 0], im)

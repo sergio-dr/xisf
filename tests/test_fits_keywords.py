@@ -251,20 +251,32 @@ def test_reader_keeps_the_rest_of_the_unit_accessible(tmp_path):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("value,comment", [(300, 1.5), (300, None), (None, 1.5)])
-def test_non_string_value_or_comment_is_converted(tmp_path, value, comment):
+@pytest.mark.parametrize(
+    "value,comment,absent", [(300, 1.5, None), (300, None, "comment"), (None, 1.5, "value")]
+)
+def test_non_string_value_or_comment_is_converted(tmp_path, value, comment, absent):
     """The XML attributes are text, so a number is stringified, not rejected."""
     entry = {}
     if value is not None:
         entry["value"] = value
     if comment is not None:
         entry["comment"] = comment
-    XISF.write(
+    # The absent attribute is reported by the writer, so the warning is asserted
+    # here rather than being left to show up in the suite summary
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        XISF.write(
             str(tmp_path / "kw.xisf"),
             sample_image(),
             "test",
             {"FITSKeywords": {"EXPTIME": [entry]}},
         )
+    reported = [str(m.message) for m in caught if issubclass(m.category, XISFWarning)]
+    if absent is None:
+        assert not reported, f"unexpected warnings: {reported}"
+    else:
+        assert len(reported) == 1
+        assert f"no {absent} attribute" in reported[0]
     got = read_keywords(str(tmp_path / "kw.xisf"))["EXPTIME"][0]
     assert got["value"] == ("" if value is None else str(value))
     assert got["comment"] == ("" if comment is None else str(comment))
