@@ -227,7 +227,7 @@ Convenience method for reading a file containing a single image.
 
 ```python
 @staticmethod
-def write(fname, im_data, creator_app=None, image_metadata={}, xisf_metadata={}, codec=None, shuffle=False, level=None)
+def write(fname, im_data, creator_app=None, image_metadata=None, xisf_metadata=None, codec=None, shuffle=False, level=None, pixel_storage=None)
 ```
 
 Writes an image (numpy array) to a XISF file. Compression may be requested but it only
@@ -236,16 +236,17 @@ will be used if it actually reduces the data size.
 **Arguments**:
 
 - `fname` - filename (will overwrite if existing)
-- `im_data` - numpy ndarray with the image data
+- `im_data` - numpy ndarray with the image data. Arrays of any dimensionality N >= 1 are written, with the geometry written as dim1:...:dimN:channel-count (spec 11.5.1). A 1-D or 2-D array is single-channel. A 3-D array is interpreted according to pixel_storage, so pass it explicitly if the shape is ambiguous. An array of four or more axes is written as purely spatial dimensions.
 - `creator_app` - string for XISF:CreatorApplication file property (defaults to python version in None provided)
 - `image_metadata` - dict with the same structure described for m_i in get_images_metadata().
-  Only 'FITSKeywords' and 'XISFProperties' keys are actually written, the rest are derived from im_data.
+  Only 'id', 'FITSKeywords' and 'XISFProperties' keys are actually written. The 'id' defaults to 'image' and shall match [_a-zA-Z][_a-zA-Z0-9]* (spec 11.5.2), an invalid one raises XISFError. The rest of the keys, such as 'geometry', 'sampleFormat' and 'pixelStorage', are derived from im_data and ignored.
 - `xisf_metadata` - file metadata, dict with the same structure returned by get_file_metadata()
 - `codec` - compression codec ('zlib', 'lz4', 'lz4hc' or 'zstd'), or None to disable compression
 - `shuffle` - whether to apply byte-shuffling before compression (ignored if codec is None). Recommended
   for 'lz4' ,'lz4hc' and 'zstd' compression algorithms.
 - `level` - for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9); for zstd, 1..22 (default: 3).
   Higher means more compression.
+- `pixel_storage` - pixel storage model of im_data, using the spec naming (spec 8.5.3). 'planar' (channels first) means a (channels, \*dims) array, which is the 'channels_first' layout used by keras and TensorFlow; 'normal' (channels last) means a (\*dims, channels) array, which is the 'channels_last' layout used by numpy, matplotlib and most image tooling. When given, im_data must have at least two dimensions and the channel count is the leading axis for 'planar' or the trailing axis for 'normal'. Defaults to None, which infers the layout from the shape: a 3-D array with a trailing dimension of 1 or 3 is read as (dim1, dim2, channels), one with a leading dimension of 1 or 3 as (channels, dim1, dim2), and anything else is treated as single-channel spatial dimensions.
 
 **Returns**:
 
