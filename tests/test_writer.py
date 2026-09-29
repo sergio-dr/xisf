@@ -444,6 +444,70 @@ def test_read_image_data_format_unchanged(tmp_path):
     )
 
 
+def test_read_image_returns_a_read_only_view(tmp_path):
+    """read_image() is documented as returning a read-only, non-owning view.
+
+    Copying the array costs more than reading it, so the reader deliberately
+    does not copy; this pins that contract so it cannot change silently.
+    """
+    im = np.arange(4 * 6 * 3, dtype=np.uint16).reshape(4, 6, 3)
+    path = tmp_path / "ro.xisf"
+    XISF.write(str(path), im)
+
+    for data_format in ("channels_last", "channels_first"):
+        a = XISF(str(path)).read_image(0, data_format=data_format)
+        assert not a.flags.writeable, data_format
+        assert not a.flags.owndata, data_format
+        with pytest.raises(ValueError):
+            a[0, 0, 0] = 999
+
+
+def test_copying_read_image_gives_a_writable_array(tmp_path):
+    """The documented workaround must work, and in both layouts."""
+    im = np.arange(4 * 6 * 3, dtype=np.uint16).reshape(4, 6, 3)
+    path = tmp_path / "rw.xisf"
+    XISF.write(str(path), im)
+
+    for data_format in ("channels_last", "channels_first"):
+        for copy in (lambda a: np.array(a), lambda a: a.copy()):
+            a = copy(XISF(str(path)).read_image(0, data_format=data_format))
+            assert a.flags.writeable, data_format
+            assert a.flags.owndata, data_format
+            a[0, 0, 0] = 999
+
+
+def test_only_order_c_copy_normalizes_the_layout(tmp_path):
+    """np.array() alone keeps the transposed layout; order='C' normalizes it.
+
+    Documented in read_image(), so a reader of the docstring does not assume
+    np.array() gives C order when the source is a transposed view.
+    """
+    im = np.arange(4 * 6 * 3, dtype=np.uint16).reshape(4, 6, 3)
+    path = tmp_path / "ord.xisf"
+    XISF.write(str(path), im)
+    a = XISF(str(path)).read_image(0, data_format="channels_last")
+
+    assert not np.array(a).flags.c_contiguous  # order='K' is the default
+    assert np.array(a, order="C").flags.c_contiguous
+    assert a.copy().flags.c_contiguous
+    np.testing.assert_array_equal(np.array(a, order="C"), im)
+
+
+def test_data_format_memory_layout_is_as_documented(tmp_path):
+    """channels_first is C-contiguous; channels_last is a transposed view.
+
+    This asymmetry is documented in read_image(); single-channel images are the
+    exception, where planar storage is already in the requested order.
+    """
+    im = np.arange(4 * 6 * 3, dtype=np.uint16).reshape(4, 6, 3)
+    path = tmp_path / "lay.xisf"
+    XISF.write(str(path), im)
+    x = XISF(str(path))
+
+    assert x.read_image(0, data_format="channels_first").flags.c_contiguous
+    assert not x.read_image(0, data_format="channels_last").flags.c_contiguous
+
+
 def test_roundtrip_preserves_dtypes(tmp_path):
     """Geometry and storage changes must not disturb sample format handling."""
     for dtype in (np.uint8, np.uint16, np.uint32, np.float32):

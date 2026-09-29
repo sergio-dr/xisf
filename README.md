@@ -183,6 +183,10 @@ def read_image(n=0, data_format='channels_last')
 
 Extracts an image from a XISF object.
 
+The returned array is a read-only view on the decoded data, not a copy: it does not own its memory and cannot be modified in place. This is deliberate, since copying the array costs more than reading it (a 256 MB image measures 125 ms to read against 154 ms extra to copy). To obtain a writable array, copy it, either with ndarray.copy() or with np.array(result).
+
+Note that the two data_format values do not have the same memory layout. Planar pixel storage decodes to (channels, \*dims) in memory, so 'channels_first' returns a C-contiguous array while 'channels_last' is a transposed view and is not C-contiguous. If you need the writable copy to be C-contiguous as well, use .copy() or np.array(result, order='C'), since np.array() alone defaults to order='K' and preserves the transposed layout.
+
 **Arguments**:
 
 - `n` - index of the image to extract in the list returned by get_images_metadata()
@@ -192,7 +196,7 @@ Extracts an image from a XISF object.
 
 **Returns**:
 
-  Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
+  Read-only Numpy ndarray with the image data, in the requested format (channels_first or channels_last). The array does not own its memory; see the note above if you need a writable one.
 
 <a id="xisf.XISF.read"></a>
 
@@ -215,7 +219,7 @@ Convenience method for reading a file containing a single image.
 
 **Returns**:
 
-- `[np.ndarray]` - Numpy ndarray with the image data, in the requested format (channels_first or channels_last).
+- `[np.ndarray]` - Numpy ndarray with the image data, in the requested format (channels_first or channels_last). The array is a read-only view on the decoded data and cannot be modified in place; pass it to np.array() or call .copy() if you need a writable array, as read_image() does.
 
 <a id="xisf.XISF.write"></a>
 
