@@ -172,7 +172,7 @@ def test_docstring_explains_keras_layouts():
 
 
 # --------------------------------------------------------------------------
-# colorSpace must name a real color space
+# colorSpace naming
 # --------------------------------------------------------------------------
 
 
@@ -187,20 +187,25 @@ def test_color_space_for_valid_channel_counts(tmp_path, shape, expected):
 
 @pytest.mark.parametrize("channels", [2, 4, 5, 6])
 @pytest.mark.parametrize("storage", ["normal", "planar"])
-def test_unsupported_channel_count_is_reported(tmp_path, channels, storage):
-    """Table 14 defines color spaces for one or three channels only.
+def test_non_rgb_channel_counts_are_named_gray(tmp_path, channels, storage):
+    """Only three channels are RGB; every other valid count is Gray.
 
-    Regression test: any channel count other than 1 was labelled "RGB". The
-    channel axis is named explicitly here, since a 3-D array whose axes are
-    none of 1 or 3 is otherwise read as three single-channel dimensions.
+    Regression test, two directions. Any channel count other than 1 was once
+    labelled "RGB", and later any count other than 1 or 3 was rejected outright.
+    Both were wrong: 11.5.1 requires only that the count be greater than zero,
+    and 8.5.1 treats the channels past the nominal ones as alpha channels, so a
+    4-channel image is valid and its nominal channel is grayscale. The channel
+    axis is named explicitly here, since a 3-D array whose axes are none of 1 or
+    3 is otherwise read as three single-channel dimensions.
     """
     shape = (4, 6, channels) if storage == "normal" else (channels, 4, 6)
-    with pytest.raises(XISFError, match="Table 14"):
-        XISF.write(
-            str(tmp_path / "cs.xisf"),
-            np.zeros(shape, dtype=np.uint16),
-            pixel_storage=storage,
-        )
+    path = tmp_path / "cs.xisf"
+    XISF.write(str(path), np.zeros(shape, dtype=np.uint16), pixel_storage=storage)
+
+    attrs = read_image_attrs(path)
+    assert attrs["colorSpace"] == "Gray"
+    # read_image_attrs returns the raw XML attribute, so geometry is a string
+    assert attrs["geometry"].split(":")[-1] == str(channels)
 
 
 # --------------------------------------------------------------------------
@@ -571,3 +576,72 @@ def test_image_id_of_wrong_type_is_refused(tmp_path):
     path = tmp_path / "int_id.xisf"
     with pytest.raises(XISFError, match="not a valid XISF image identifier"):
         XISF.write(str(path), np.zeros((4, 6), np.uint16), "t", {"id": 42})
+
+
+def test_three_d_array_with_ambiguous_trailing_axis_is_spatial(tmp_path):
+    """A (H, W, 4) array is NOT a 4-channel image under the default inference.
+
+    The default pixel_storage=None infers the layout from the shape, and a
+    trailing axis of 4 is neither 1 nor 3, so the array is written as a 4-D
+    single-channel image. This silently changes the geometry, so pixel_storage
+    has to be passed explicitly to get a 4-channel image instead.
+    """
+    im = np.zeros((4, 6, 4), np.uint8)
+    path = tmp_path / "amb.xisf"
+    XISF.write(str(path), im, "t")
+
+    meta = XISF(str(path)).get_images_metadata()[0]
+    assert meta["geometry"] == (4, 6, 4, 1)
+    assert meta["colorSpace"] == "Gray"
+    assert XISF(str(path)).read_image(0).shape == (4, 6, 4, 1)
+
+
+def test_explicit_pixel_storage_writes_a_four_channel_image(tmp_path):
+    """With the layout stated, 4 channels is written rather than rejected.
+
+    Spec 11.5.1 requires only that the channel count be greater than zero, and
+    8.5.1 calls the channels beyond the nominal ones alpha channels, so a
+    4-channel image is one nominal grayscale channel plus three alpha channels.
+    RGB and CIELab are the only spaces defined over three channels, so Gray,
+    which 11.5.2 also makes the default, is the literal for every other count.
+    """
+    im = np.arange(4 * 6 * 4, dtype=np.uint16).reshape(4, 6, 4)
+    path = tmp_path / "four_ch.xisf"
+    XISF.write(str(path), im, "t", pixel_storage="normal")
+
+    x = XISF(str(path))
+    meta = x.get_images_metadata()[0]
+    assert meta["geometry"] == (6, 4, 4)
+    assert meta["colorSpace"] == "Gray"
+    np.testing.assert_array_equal(x.read_image(0), im)
+
+
+@pytest.mark.parametrize("channels", [1, 2, 3, 4, 5, 8, 16])
+@pytest.mark.parametrize("storage", ["normal", "planar"])
+def test_any_channel_count_round_trips(tmp_path, channels, storage):
+    """No upper bound on the channel count; only zero is disallowed."""
+    if storage == "normal":
+        im = np.arange(2 * 3 * channels, dtype=np.uint16).reshape(2, 3, channels)
+    else:
+        im = np.arange(channels * 2 * 3, dtype=np.uint16).reshape(channels, 2, 3)
+    path = tmp_path / f"c{channels}_{storage}.xisf"
+    XISF.write(str(path), im, "t", pixel_storage=storage)
+
+    x = XISF(str(path))
+    meta = x.get_images_metadata()[0]
+    assert meta["colorSpace"] == ("RGB" if channels == 3 else "Gray")
+    # read back in the layout the file was written in, since read_image
+    # defaults to channels_last
+    data_format = "channels_last" if storage == "normal" else "channels_first"
+    np.testing.assert_array_equal(x.read_image(0, data_format=data_format), im)
+
+
+def test_zero_channels_is_rejected(tmp_path):
+    """Spec 11.5.1 requires every dimension, including the channel count, > 0."""
+    with pytest.raises(XISFError, match="greater than zero"):
+        XISF.write(
+            str(tmp_path / "zero_ch.xisf"),
+            np.zeros((4, 6, 0), np.uint16),
+            "t",
+            pixel_storage="normal",
+        )

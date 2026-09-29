@@ -59,7 +59,7 @@ class XISF:
     What's supported:
     - Monolithic XISF files only
         - XISF data blocks with attachment, inline or embedded block locations
-        - Planar pixel storage models, *however it assumes 2D images only* (with multiple channels)
+        - Both pixel storage models (planar and normal), for images of any dimensionality N >= 1
         - UInt8/16/32 and Float32/64 pixel sample formats
         - Grayscale and RGB color spaces
     - Decoding:
@@ -75,8 +75,6 @@ class XISF:
     - Metadata and FITSKeyword core elements
 
     What's not supported (at least by now):
-    - Read pixel data in the normal pixel storage models
-    - Read pixel data in the planar pixel storage models other than 2D images
     - Complex and Table properties
     - Any other not explicitly supported core elements (Resolution, Thumbnail, ICCProfile, etc.)
 
@@ -656,19 +654,19 @@ class XISF:
     def _color_space_for_channels(channels):
         """Return the XISF colorSpace literal for a channel count.
 
-        Table 14 in spec 11.5.2 defines the permitted color spaces as Gray, RGB
-        and Lab, all of which are either one or three channels, so no colorSpace
-        literal exists for any other channel count.
+        Table 14 in spec 11.5.2 permits exactly three literals, Gray, RGB and
+        CIELab, and RGB and CIELab are each defined over three nominal channels.
+        That does not constrain the total channel count: spec 8.5.1 calls the
+        first channels strictly required to define the color model the nominal
+        channels and everything beyond them alpha channels, and 11.5.1 requires
+        only that the channel count be greater than zero. So any other count is
+        valid, and the nominal channels are grayscale with the remainder as
+        alpha channels. Gray is the default assumed for an image without a
+        colorSpace attribute (11.5.2), so it is also the right literal here.
         """
-        if channels == 1:
-            return "Gray"
         if channels == 3:
             return "RGB"
-        raise XISFError(
-            f"Cannot write an image with {channels} channels: the XISF 1.0 spec"
-            f" defines color spaces for one (Gray) or three (RGB, Lab) channels"
-            f" only (section 11.5.2, Table 14)"
-        )
+        return "Gray"
 
     # For float sample formats, bounds="0:1" is assumed
     @staticmethod
