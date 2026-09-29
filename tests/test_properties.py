@@ -516,6 +516,112 @@ def test_wellformed_properties_unaffected_by_validation(make_file):
     np.testing.assert_array_equal(props["F64Matrix:Test"]["value"], values)
 
 
+# --------------------------------------------------------------------------
+# Duplicate property identifiers (spec 8.4.1)
+# --------------------------------------------------------------------------
+
+
+def test_duplicate_property_id_warns_and_keeps_the_last(make_file):
+    """A property id must be unique for the object it is associated with.
+
+    Spec 8.4.1 states this as a 'must' but does not say what a decoder must do
+    with a file that violates it, so the last occurrence is kept and the
+    collision is reported rather than silently dropping a value.
+    """
+    inner = (
+        '<Property id="P:Dup" type="Float" value="60.0"/>'
+        '<Property id="P:Dup" type="Float" value="120.0"/>'
+    )
+    path = image_props(make_file, inner)
+
+    with pytest.warns(XISFWarning, match="more than one property with id 'P:Dup'"):
+        props = read_props(path)
+
+    assert props["P:Dup"]["value"] == 120.0
+
+
+def test_duplicate_property_id_names_the_owner(make_file):
+    """The warning says which object the duplicate was found in.
+
+    image_element() in conftest builds an Image without an id, which is legal
+    since the attribute is optional, so the owner is named '<unknown>'.
+    """
+    inner = '<Property id="P:Dup" type="Int" value="1"/><Property id="P:Dup" type="Int" value="2"/>'
+    path = image_props(make_file, inner)
+
+    with pytest.warns(XISFWarning, match=r"in image <unknown>"):
+        read_props(path)
+
+
+def test_duplicate_property_id_names_a_named_image(make_file):
+    """When the Image does carry an id, that id appears in the warning."""
+    body = (
+        METADATA
+        + image_element(sample_image())[: -len("</Image>")].replace(
+            "<Image ", '<Image id="MyLight" '
+        )
+        + '<Property id="P:Dup" type="Int" value="1"/>'
+        '<Property id="P:Dup" type="Int" value="2"/>'
+        "</Image>"
+    )
+    path = make_file(body)
+
+    with pytest.warns(XISFWarning, match="in image MyLight"):
+        read_props(path)
+
+
+def test_duplicate_metadata_property_id_warns(make_file):
+    """The same rule applies to the properties of the unit as a whole."""
+    body = (
+        '<Metadata>'
+        '<Property id="XISF:Keep" type="Int" value="1"/>'
+        '<Property id="XISF:Keep" type="Int" value="2"/>'
+        "</Metadata>" + image_element(sample_image())
+    )
+    path = make_file(body)
+
+    with pytest.warns(XISFWarning, match="in the XISF unit"):
+        meta = XISF(str(path)).get_file_metadata()
+
+    assert meta["XISF:Keep"]["value"] == 2
+
+
+def test_distinct_property_ids_do_not_warn(make_file):
+    """The warning must not fire on a well-formed file."""
+    inner = '<Property id="P:A" type="Int" value="1"/><Property id="P:B" type="Int" value="2"/>'
+    path = image_props(make_file, inner)
+
+    with _no_warnings():
+        props = read_props(path)
+
+    assert set(props) == {"P:A", "P:B"}
+
+
+def test_same_property_id_on_different_objects_is_fine(make_file):
+    """Spec 8.4.1 scopes uniqueness to the associated object.
+
+    A unit-level property may reuse the identifier of an image property, and
+    two images may share property identifiers, so neither is a duplicate.
+    """
+    body = (
+        '<Metadata><Property id="P:Shared" type="Int" value="99"/></Metadata>'
+        + image_element(sample_image())[
+            : -len("</Image>")
+        ]
+        + '<Property id="P:Shared" type="Int" value="1"/>'
+        "</Image>"
+    )
+    path = make_file(body)
+
+    with _no_warnings():
+        x = XISF(str(path))
+        meta = x.get_file_metadata()
+        props = x.get_images_metadata()[0]["XISFProperties"]
+
+    assert meta["P:Shared"]["value"] == 99
+    assert props["P:Shared"]["value"] == 1
+
+
 class _no_warnings:
     """Assert that reading produced no warnings at all."""
 

@@ -24,6 +24,7 @@ from importlib.metadata import version
 __version__ = version(__name__)
 
 import platform
+import re
 import xml.etree.ElementTree as ET
 import numpy as np
 import lz4.block  # https://python-lz4.readthedocs.io/en/stable/lz4.block.html
@@ -241,11 +242,10 @@ class XISF:
                 "location": self._parse_location(image.attrib["location"]),
                 "dtype": self._parse_sampleFormat(image.attrib["sampleFormat"]),
                 "FITSKeywords": fits_keywords,
-                "XISFProperties": {
-                    p.attrib["id"]: prop
-                    for p in image.findall("xisf:Property", self._xml_ns)
-                    if (prop := self._process_property(p))
-                },
+                "XISFProperties": self._collect_properties(
+                    image.findall("xisf:Property", self._xml_ns),
+                    f"image {image.attrib.get('id', '<unknown>')}",
+                ),
             }
             # Also parses compression attribute if present, converting it to a tuple
             if "compression" in image.attrib:
@@ -286,10 +286,44 @@ class XISF:
                 f"{self._fname}; using the first",
                 XISFWarning,
             )
-        for p in metadata_elems[0] if metadata_elems else []:
-            self._file_meta[p.attrib["id"]] = self._process_property(p)
+        self._file_meta.update(
+            self._collect_properties(
+                metadata_elems[0] if metadata_elems else [], "the XISF unit"
+            )
+        )
 
         # TODO: rest of XISF core elements: Resolution, ICCProfile, Thumbnail, ...
+
+    def _collect_properties(self, property_elems, owner):
+        """Map Property elements to a dict keyed by id, warning on duplicates.
+
+        A property identifier must be unique for the object with which the
+        property is associated (spec 8.4.1). The specification does not say
+        what a decoder must do when a file violates that requirement, so this
+        keeps the last occurrence, which is what a dict assignment would do
+        anyway, and reports the collision instead of dropping a value silently.
+
+        Properties that cannot be parsed at all are skipped by
+        _process_property(), which reports them itself, since a decoder must
+        keep the rest of the unit accessible (spec 7). It signals that with a
+        false value, which is why this tests for truthiness rather than None.
+        """
+        properties = {}
+        for p in property_elems:
+            prop = self._process_property(p)
+            if not prop:
+                continue
+            prop_id = p.attrib["id"]
+            if prop_id in properties:
+                warnings.warn(
+                    f"Found more than one property with id {prop_id!r} in"
+                    f" {owner}; a property identifier must be unique for the"
+                    f" object with which it is associated (XISF 1.0 spec,"
+                    f" section 8.4.1). Keeping the last one.",
+                    XISFWarning,
+                )
+            properties[prop_id] = prop
+        return properties
 
     def get_images_metadata(self):
         """Provides the metadata of all image blocks contained in the XISF File, extracted from
@@ -662,7 +696,10 @@ class XISF:
               is written as purely spatial dimensions.
             creator_app: string for XISF:CreatorApplication file property (defaults to python version in None provided)
             image_metadata: dict with the same structure described for m_i in get_images_metadata().
-              Only 'FITSKeywords' and 'XISFProperties' keys are actually written, the rest are derived from im_data.
+              Only 'id', 'FITSKeywords' and 'XISFProperties' keys are actually written. The 'id'
+              defaults to 'image' and shall match [_a-zA-Z][_a-zA-Z0-9]* (spec 11.5.2), an
+              invalid one raises XISFError. The rest of the keys, such as 'geometry',
+              'sampleFormat' and 'pixelStorage', are derived from im_data and ignored.
             xisf_metadata: file metadata, dict with the same structure returned by get_file_metadata()
             codec: compression codec ('zlib', 'lz4', 'lz4hc' or 'zstd'), or None to disable compression
             shuffle: whether to apply byte-shuffling before compression (ignored if codec is None). Recommended
@@ -864,6 +901,7 @@ class XISF:
 
         # __/ Prepare image and its metadata \__________
         im_id = image_metadata.get("id", "image")
+        XISF._validate_image_id(im_id)
         im_attrs = _create_image_metadata(im_id)
         im_data_block, data_size, codec_str = _serialize_data_block(
             im_data, im_attrs, codec, level, shuffle
@@ -1220,6 +1258,10 @@ class XISF:
     # therefore be an empty string rather than a meaningful value (section 11.6.1)
     _fits_keywords_without_value = ("HISTORY", "COMMENT")
 
+    # The regular expression an Image element id must satisfy (section 11.5.2).
+    # Unlike a property identifier, it admits no namespace separator.
+    _image_id_re = re.compile(r"[_a-zA-Z][_a-zA-Z0-9]*")
+
     @staticmethod
     def _validate_fits_keyword_name(name, writing):
         """Check a FITS keyword name against the FITS standard, as quoted in 11.6.1.
@@ -1284,6 +1326,36 @@ class XISF:
         return all(
             c.isascii() and (c.isdigit() or ("A" <= c <= "Z") or c in "_-")
             for c in name
+        )
+
+    @staticmethod
+    def _validate_image_id(image_id):
+        """Check an Image element id against the expression quoted in 11.5.2.
+
+        The id attribute is optional, but when it is present image-id shall be a
+        sequence of ASCII characters satisfying [_a-zA-Z][_a-zA-Z0-9]*. The
+        expression admits neither spaces nor the colon used to delimit
+        namespaces in property identifiers, and it requires the first character
+        to be a letter or an underscore.
+
+        Unlike a property identifier, there is nothing to repair here: every
+        character outside the expression is equally unusable, and any
+        substitution would invent an identifier the caller did not ask for. An
+        encoder shall generate only conforming units, so this raises.
+
+        Uniqueness within the XISF unit, also required by 11.5.2, is not checked
+        here: write() serializes a single Image element, and the reader returns
+        the images in document order rather than keyed by id, so a unit written
+        by this module cannot violate it.
+        """
+        if isinstance(image_id, str) and XISF._image_id_re.fullmatch(image_id):
+            return
+        raise XISFError(
+            f"Image id {image_id!r} is not a valid XISF image identifier:"
+            f" identifiers shall be ASCII characters matching"
+            f" [_a-zA-Z][_a-zA-Z0-9]*, so they shall start with a letter or an"
+            f" underscore and shall contain neither spaces nor colons"
+            f" (required by the XISF 1.0 spec, section 11.5.2)"
         )
 
     @staticmethod

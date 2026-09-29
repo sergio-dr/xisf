@@ -518,3 +518,56 @@ def test_roundtrip_preserves_dtypes(tmp_path):
             np.dtype(dtype)
         )
         np.testing.assert_array_equal(XISF(str(path)).read_image(0), im)
+
+
+# --------------------------------------------------------------------------
+# Image identifiers (spec 11.5.2)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "image_id", ["image", "MyLight", "A", "_", "_x1", "Foo_2", "a0" * 20]
+)
+def test_valid_image_id_is_written_and_round_trips(tmp_path, image_id):
+    """The id expression [_a-zA-Z][_a-zA-Z0-9]* is accepted verbatim."""
+    path = tmp_path / "id.xisf"
+    XISF.write(str(path), np.zeros((4, 6), np.uint16), "t", {"id": image_id})
+    assert XISF(str(path)).get_images_metadata()[0]["id"] == image_id
+
+
+@pytest.mark.parametrize(
+    "image_id",
+    [
+        "1image",  # must not start with a digit
+        "9",
+        "has space",
+        "has:colon",  # the colon is a property namespace separator, not allowed here
+        "",
+        "a-b",
+        "a.b",
+        "ns:prop",
+    ],
+)
+def test_invalid_image_id_is_refused_when_writing(tmp_path, image_id):
+    """Spec 11.5.2: image-id shall match [_a-zA-Z][_a-zA-Z0-9]*.
+
+    An encoder shall generate only conforming units (spec 7), so this raises
+    rather than warning. There is nothing to sanitize to: every character
+    outside the expression is equally unusable.
+    """
+    path = tmp_path / "bad_id.xisf"
+    with pytest.raises(XISFError, match="not a valid XISF image identifier"):
+        XISF.write(str(path), np.zeros((4, 6), np.uint16), "t", {"id": image_id})
+
+
+def test_image_id_is_optional_and_defaults_to_image(tmp_path):
+    path = tmp_path / "def.xisf"
+    XISF.write(str(path), np.zeros((4, 6), np.uint16), "t")
+    assert XISF(str(path)).get_images_metadata()[0]["id"] == "image"
+
+
+def test_image_id_of_wrong_type_is_refused(tmp_path):
+    """A non-string id cannot match the expression either."""
+    path = tmp_path / "int_id.xisf"
+    with pytest.raises(XISFError, match="not a valid XISF image identifier"):
+        XISF.write(str(path), np.zeros((4, 6), np.uint16), "t", {"id": 42})
