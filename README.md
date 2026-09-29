@@ -43,6 +43,7 @@ What's supported:
     - Support all standard compression codecs defined in this specification for decompression 
       (zlib/lz4[hc]/zstd + byte shuffling)
     - Verification of the SHA-1, SHA-256 and SHA-512 checksums that a baseline decoder shall support (spec 7.2), and of the optional SHA3-256 and SHA3-512 ones. A compressed block is verified before it is decompressed (spec 10.6.1).
+    - Unsupported objects are reported and left unavailable without making the rest of the file unreachable (spec 7). An unreadable image keeps its slot in get_images_metadata() so that the indices of the following images do not shift, and read_image() raises XISFError with the reason.
 - Encoding:
     - Single image core element with an attached data block
     - Support all standard compression codecs defined in this specification for decompression 

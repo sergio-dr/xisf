@@ -257,21 +257,40 @@ class XISF:
                     {"value": value.strip("'").strip(" "), "comment": comment}
                 )
 
-            image_extended_meta = {
-                "geometry": self._parse_geometry(image.attrib["geometry"]),
-                "location": self._parse_location(image.attrib["location"]),
-                "dtype": self._parse_sampleFormat(image.attrib["sampleFormat"]),
-                "FITSKeywords": fits_keywords,
-                "XISFProperties": self._collect_properties(
-                    image.findall("xisf:Property", self._xml_ns),
-                    f"image {image.attrib.get('id', '<unknown>')}",
-                ),
-            }
-            # Also parses compression attribute if present, converting it to a tuple
-            if "compression" in image.attrib:
-                image_extended_meta["compression"] = self._parse_compression(
-                    image.attrib["compression"]
+            try:
+                image_extended_meta = {
+                    "geometry": self._parse_geometry(image.attrib["geometry"]),
+                    "location": self._parse_location(image.attrib["location"]),
+                    "dtype": self._parse_sampleFormat(
+                        image.attrib["sampleFormat"]
+                    ),
+                    "FITSKeywords": fits_keywords,
+                    "XISFProperties": self._collect_properties(
+                        image.findall("xisf:Property", self._xml_ns),
+                        f"image {image.attrib.get('id', '<unknown>')}",
+                    ),
+                }
+
+                # Also parses compression attribute if present, converting it to a tuple
+                if "compression" in image.attrib:
+                    image_extended_meta["compression"] = self._parse_compression(
+                        image.attrib["compression"]
+                    )
+            except NotImplementedError as e:
+                # A decoder that finds an object it does not support shall treat
+                # that object as unavailable, report it, and keep the rest of the
+                # XISF unit accessible (spec 7). The image keeps its slot so that
+                # the indices of the images after it do not shift, and read_image
+                # reports the failure when this image is requested.
+                warnings.warn(
+                    f"Image {image.attrib.get('id', '<unknown>')} of {self._fname}"
+                    f" is not supported and will be unavailable: {e}",
+                    XISFWarning,
                 )
+                image_extended_meta = {
+                    "unavailable": str(e),
+                }
+
 
             # pixelStorage is optional, and the default for an Image element
             # without it is the planar model (spec 11.5.2). A baseline decoder
@@ -376,6 +395,13 @@ class XISF:
         fits_keyword_values_list = [ {'value': <value>, 'comment': <comment> }, ...]
         property_dict = {'id': <xisf_property_name>, 'type': <xisf_type>, 'value': property_value, ...}
         ```
+
+        A decoder shall treat an object it does not support as unavailable, report
+        the situation, and keep the rest of the XISF unit accessible (spec 7). An
+        image this package cannot read therefore keeps its entry in this list, so
+        that the indices of the images after it do not shift, and carries an
+        'unavailable' key with the reason instead of the metadata above. Reading it
+        with read_image() raises XISFError.
 
         Returns:
             list [ m_0, m_1, ..., m_{n-1} ] where m_i is a dict as described above.
@@ -485,8 +511,12 @@ class XISF:
             "hex": lambda d: base64.b16decode(d, casefold=True),
         }
         if encoding not in encodings:
+            # Reported against the object that owns the block, so that the user can
+            # tell which one is unavailable while the rest of the XISF unit stays
+            # accessible (spec 7)
             raise NotImplementedError(
-                f"Data block encoding type '{encoding}' not implemented: {elem}"
+                f"{self._block_owner(elem)} is not supported: data block encoding"
+                f" type '{encoding}' not implemented"
             )
 
         data = encodings[encoding](data)
@@ -575,6 +605,12 @@ class XISF:
         geometry = meta["geometry"]
         channels = geometry[-1]
         dims = geometry[:-1][::-1]
+
+        if "unavailable" in meta:
+            # The image could not be parsed at open time; see _analyze_header
+            raise XISFError(
+                f"Image #{n} is unavailable: {meta['unavailable']}"
+            )
 
         data = self._read_data_block(meta, self._images_xml[n])
         dtype = self._dtype_for_byte_order(meta["dtype"], meta["byteOrder"])
@@ -1868,7 +1904,14 @@ class XISF:
         elif codec.startswith("zlib"):
             data = zlib.decompress(data)
         else:
-            raise NotImplementedError(f"Unimplemented compression codec {codec}")
+            # The failure is reported against the object that owns the block, so
+            # that the user can tell which one is unavailable while the rest of
+            # the XISF unit stays accessible (spec 7)
+            kind = elem.get("type") and "Property" or "Image"
+            raise NotImplementedError(
+                f"{kind} {elem.get('id', '<unknown>')} is not supported: "
+                f"unimplemented compression codec {codec}"
+            )
 
         if item_size:  # using byte-shuffling
             data = XISF._unshuffle(data, item_size)
