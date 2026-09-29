@@ -86,12 +86,14 @@ def encode_block(raw, encoding="base64", codec=None, item_size=None):
 
 def image_element(
     im, location="inline", encoding="base64", codec=None, item_size=None,
-    pixel_storage=None,
+    pixel_storage=None, byte_order=None,
 ):
     """Build an <Image> element with an inline or embedded data block.
 
     pixel_storage selects the storage model, 'Planar' (the spec default) or
     'Normal'. When None the attribute is omitted so that the spec default applies.
+    byte_order selects the block byte order, 'big' or 'little'. When None the
+    attribute is omitted so that the spec default of little-endian applies.
     """
     h, w, c = im.shape
     if pixel_storage is None:
@@ -111,6 +113,8 @@ def image_element(
         f'colorSpace="{color_space(c)}"'
         f"{storage_attr}"
     )
+    if byte_order is not None:
+        attrs += f' byteOrder="{byte_order}"'
     if location == "inline":
         loc = f"inline:{encoding}"
         if compression:

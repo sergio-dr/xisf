@@ -50,8 +50,6 @@ What's supported:
 - Metadata and FITSKeyword core elements
 
 What's not supported (at least by now):
-- Read pixel data in the normal pixel storage models
-- Read pixel data in the planar pixel storage models other than 2D images
 - Complex and Table properties
 - Any other not explicitly supported core elements (Resolution, Thumbnail, ICCProfile, etc.)
 
@@ -121,9 +119,11 @@ It outputs a dictionary m_i for each image, with the following structure:
 
 ```
 m_i = { 
-    'geometry': (width, height, channels), # only 2D images (with multiple channels) are supported
+    'geometry': (dim1, ..., dimN, channels), # dim1 is the X-axis, i.e. width
     'location': (pos, size), # used internally in read_image()
     'dtype': np.dtype('...'), # derived from sampleFormat argument
+    'pixelStorage': 'Planar' or 'Normal', # spec 11.5.2, defaults to 'Planar'
+    'byteOrder': 'big' or 'little', # spec 10.4, defaults to 'little'
     'compression': (codec, uncompressed_size, item_size), # optional
     'key': 'value', # other <Image> attributes are simply copied 
     ..., 
@@ -187,6 +187,8 @@ The returned array is a read-only view on the decoded data, not a copy: it does 
 
 Note that the two data_format values do not have the same memory layout. Planar pixel storage decodes to (channels, \*dims) in memory, so 'channels_first' returns a C-contiguous array while 'channels_last' is a transposed view and is not C-contiguous. If you need the writable copy to be C-contiguous as well, use .copy() or np.array(result, order='C'), since np.array() alone defaults to order='K' and preserves the transposed layout.
 
+The data block byte order is honored (spec 10.4), so blocks in either byte order are decoded, and the returned array is always in the machine's byte order. A block needing a byte swap is a copy rather than a view, and is therefore writable.
+
 **Arguments**:
 
 - `n` - index of the image to extract in the list returned by get_images_metadata()
@@ -236,7 +238,7 @@ will be used if it actually reduces the data size.
 **Arguments**:
 
 - `fname` - filename (will overwrite if existing)
-- `im_data` - numpy ndarray with the image data. Arrays of any dimensionality N >= 1 are written, with the geometry written as dim1:...:dimN:channel-count (spec 11.5.1). A 1-D or 2-D array is single-channel. A 3-D array is interpreted according to pixel_storage, so pass it explicitly if the shape is ambiguous. An array of four or more axes is written as purely spatial dimensions.
+- `im_data` - numpy ndarray with the image data. Arrays of any dimensionality N >= 1 are written, with the geometry written as dim1:...:dimN:channel-count (spec 11.5.1). A 1-D or 2-D array is single-channel. A 3-D array is interpreted according to pixel_storage, so pass it explicitly if the shape is ambiguous. An array of four or more axes is written as purely spatial dimensions. The array shall be in the machine's byte order, which is the byte order written to the file (spec 10.4); an array with an explicit foreign byte order raises XISFError rather than being written with a byteOrder attribute that misdescribes it. Convert it with, for example, `im_data.astype(im_data.dtype.newbyteorder("="))`.
 - `creator_app` - string for XISF:CreatorApplication file property (defaults to python version in None provided)
 - `image_metadata` - dict with the same structure described for m_i in get_images_metadata().
   Only 'id', 'FITSKeywords' and 'XISFProperties' keys are actually written. The 'id' defaults to 'image' and shall match [_a-zA-Z][_a-zA-Z0-9]* (spec 11.5.2), an invalid one raises XISFError. The rest of the keys, such as 'geometry', 'sampleFormat' and 'pixelStorage', are derived from im_data and ignored.

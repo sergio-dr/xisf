@@ -31,10 +31,12 @@ hdul = fits.open(args.input_file)
 # Searchs for the first HDU with image data
 for hdu in hdul:
     if isinstance(hdu.data, np.ndarray):
-        img_data = np.atleast_3d(hdu.data)
+        native_endian = hdu.data.dtype.newbyteorder("=")  # dtype to native endianness
+        img_data = np.atleast_3d(hdu.data.astype(native_endian))  # Ensure 3D array and native byte order
         fits_header = hdu.header  # Header assumed in the same HDU
 
 print(f"Image dimensions: {img_data.shape}")
+print(f"Image data dtype: {img_data.dtype}")
 
 print("Header:")
 fits_keyw = {}

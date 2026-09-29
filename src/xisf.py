@@ -259,6 +259,15 @@ class XISF:
                 "pixelStorage", "Planar"
             )
 
+            # The byteOrder attribute declares the endianness of the serialized
+            # block, and little-endian is assumed when it is absent (spec 10.4).
+            # A baseline decoder shall read data blocks in both byte orders
+            # (spec 7.2), so it is recorded here for read_image to honor. It
+            # applies to the uncompressed data of a compressed block as well.
+            image_extended_meta["byteOrder"] = image.attrib.get(
+                "byteOrder", "little"
+            )
+
             # Merge basic and extended metadata in a dict
             image_meta = {**image_basic_meta, **image_extended_meta}
 
@@ -459,6 +468,11 @@ class XISF:
         obtain a writable array, copy it, either with ndarray.copy() or with
         np.array(result).
 
+        The data block byte order is honored (spec 10.4), so blocks in either
+        byte order are decoded, and the returned array is always in the machine's
+        byte order. A block needing a byte swap is a copy rather than a view, and
+        is therefore writable.
+
         Note that the two data_format values do not have the same memory
         layout. Planar pixel storage decodes to (channels, *dims) in memory, so
         'channels_first' returns a C-contiguous array while 'channels_last' is a
@@ -501,7 +515,8 @@ class XISF:
         dims = geometry[:-1][::-1]
 
         data = self._read_data_block(meta, self._images_xml[n])
-        im_data = np.frombuffer(data, dtype=meta["dtype"])
+        dtype = self._dtype_for_byte_order(meta["dtype"], meta["byteOrder"])
+        im_data = np.frombuffer(data, dtype=dtype)
         # Decode according to the pixel storage model: planar stores each channel
         # as a contiguous run of samples, while normal stores the samples of each
         # pixel together (spec 8.5.3). The default is the planar model
@@ -513,6 +528,13 @@ class XISF:
             im_data = np.moveaxis(im_data.reshape((*dims, channels)), -1, 0)
         if data_format == "channels_last":
             im_data = np.moveaxis(im_data, 0, -1)
+        # The block was decoded with the dtype that interprets the serialized
+        # bytes, which for a non-native byteOrder is not the native dtype.
+        # Convert it, so the caller always receives an array in the machine's
+        # byte order. This allocates a new array, which is unavoidable since the
+        # block is a read-only view, and it also makes the result writable.
+        if dtype != meta["dtype"]:
+            im_data = im_data.astype(meta["dtype"])
         return im_data
 
     @staticmethod
@@ -691,7 +713,12 @@ class XISF:
               dim1:...:dimN:channel-count (spec 11.5.1). A 1-D or 2-D array is
               single-channel. A 3-D array is interpreted according to pixel_storage, so
               pass it explicitly if the shape is ambiguous. An array of four or more axes
-              is written as purely spatial dimensions.
+              is written as purely spatial dimensions. The array shall be in the
+              machine's byte order, which is the byte order written to the file
+              (spec 10.4); an array with an explicit foreign byte order raises
+              XISFError rather than being written with a byteOrder attribute that
+              misdescribes it. Convert it with, for example,
+              im_data.astype(im_data.dtype.newbyteorder("=")).
             creator_app: string for XISF:CreatorApplication file property (defaults to python version in None provided)
             image_metadata: dict with the same structure described for m_i in get_images_metadata().
               Only 'id', 'FITSKeywords' and 'XISFProperties' keys are actually written. The 'id'
@@ -740,6 +767,24 @@ class XISF:
         # metadata is derived from it, so that geometry and the data block always
         # agree (spec 11.5.1: geometry is dim1:...:dimN:channel-count, N >= 1)
         dims, channels, input_storage = XISF._resolve_image_data(im_data, pixel_storage)
+
+        # The data block is serialized as-is with tobytes(), so its byte order is
+        # the byte order of im_data, and the byteOrder attribute declared for it is
+        # derived from the machine. An array that is not already in the machine's
+        # byte order would therefore be written with a byteOrder attribute that
+        # misdescribes it, so it is rejected instead of silently corrupting the
+        # file. Endianness is immaterial for single-byte sample formats.
+        if im_data.dtype.itemsize > 1 and im_data.dtype.byteorder not in (
+            "=",
+            "|",
+            sys.byteorder,
+        ):
+            raise XISFError(
+                f"im_data has byte order '{im_data.dtype.str}', but the machine is"
+                f" {sys.byteorder}-endian and the data block is written as-is."
+                f" Convert it first, for example with"
+                f" im_data.astype(im_data.dtype.newbyteorder('='))"
+            )
         im_data = XISF._reorder_to_dims(im_data, dims, channels, input_storage)
         # geometry is dim1:...:dimN:channel-count (spec 11.5.1), where dim1 is the
         # X-axis and dimN the Y-axis for a 2-D image. A numpy array is indexed
@@ -761,7 +806,15 @@ class XISF:
             image_attrs["sampleFormat"] = XISF._get_sampleFormat(im_data.dtype)
             if image_attrs["sampleFormat"].startswith("Float"):
                 image_attrs["bounds"] = "0:1"  # Assumed
-            if sys.byteorder == "big" and image_attrs["sampleFormat"] != "UInt8":
+            # The data block is serialized as im_data.tobytes(), so it carries
+            # whatever byte order im_data has, and the byteOrder attribute
+            # declares that (spec 10.4). It is derived from the machine, since
+            # _check_native_byte_order has already rejected any array that does
+            # not already be in the machine's byte order, so the attribute is
+            # only ever needed to spell out the little-endian default. It is
+            # meaningless for single-byte sample formats, which have no byte
+            # order to declare.
+            if sys.byteorder == "big" and im_data.dtype.itemsize > 1:
                 image_attrs["byteOrder"] = "big"
             return image_attrs
 
@@ -1453,6 +1506,31 @@ class XISF:
 
     # Return equivalent numpy dtype
     @staticmethod
+    def _dtype_for_byte_order(dtype, byte_order):
+        """Return the dtype to interpret a serialized block with.
+
+        The byteOrder attribute declares the endianness of a data block, and
+        little-endian is assumed when it is absent (spec 10.4). A baseline
+        decoder shall read data blocks in both byte orders (spec 7.2).
+
+        The returned dtype is the one that correctly interprets the serialized
+        bytes, which is the explicit byte order of the block. It differs from
+        the native-order dtype exactly when the block has to be byte-swapped,
+        which read_image then does so the caller always gets a native-order
+        array. Endianness is immaterial for single-byte sample formats, where
+        the block order and the native order are the same dtype.
+        """
+        if byte_order not in ("little", "big"):
+            raise XISFError(
+                f"Image declares byteOrder={byte_order!r}: the byteOrder"
+                f" attribute must be either 'big' or 'little' (XISF 1.0 spec,"
+                f" section 10.4)"
+            )
+        if byte_order == "little" or dtype.itemsize == 1:
+            return dtype
+        return dtype.newbyteorder(">" if byte_order == "big" else "<")
+
+    @staticmethod
     def _parse_sampleFormat(s):
         # Translate alternate names to "canonical" type names
         alternate_names = {
@@ -1492,7 +1570,7 @@ class XISF:
             "float64": "Float64",
         }
         try:
-            return _sampleFormats[str(dtype)]
+            return _sampleFormats[dtype.name]
         except:
             raise NotImplementedError(f"sampleFormat for {dtype} not implemented")
 
