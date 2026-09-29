@@ -28,7 +28,7 @@ this program.  If not, see <http://www.gnu.org/licenses/>.
 class XISF()
 ```
 
-Implements an baseline XISF Decoder and a simple baseline Encoder.
+Implements an baseline XISF Decoder and a simple baseline Encoder (XISF spec v1.01 conformance).
 It parses metadata from Image and Metadata XISF core elements. Image data is returned as a numpy ndarray 
 (using the "channels-last" convention by default). 
 

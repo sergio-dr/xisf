@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xisf"
-version = "0.9.7"
+version = "1.0.1"
 description = "Encoder/Decoder for XISF (Extensible Image Serialization Format)"
 readme = "README.md"
 authors = [{ name = "Sergio Díaz", email = "sergio.diaz.ruiz@gmail.com" }]
-requires-python = ">=3.6"
+requires-python = ">=3.8"
 keywords = ["astronomy", "XISF"]
 license = {text = "GNU General Public License v3 (GPLv3)"}
 classifiers = [
