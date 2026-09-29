@@ -42,10 +42,12 @@ What's supported:
     - multiple Image core elements from a monolithic XISF file
     - Support all standard compression codecs defined in this specification for decompression 
       (zlib/lz4[hc]/zstd + byte shuffling)
+    - Verification of the SHA-1, SHA-256 and SHA-512 checksums that a baseline decoder shall support (spec 7.2), and of the optional SHA3-256 and SHA3-512 ones. A compressed block is verified before it is decompressed (spec 10.6.1).
 - Encoding:
     - Single image core element with an attached data block
     - Support all standard compression codecs defined in this specification for decompression 
       (zlib/lz4[hc]/zstd + byte shuffling)
+    - SHA-1 checksums of every data block by default, with any of the five algorithms of spec 10.5 available (can be disabled)
 - "Atomic" properties (scalar types, String, TimePoint), Vector and Matrix (e.g. astrometric solutions)
 - Metadata and FITSKeyword core elements
 
@@ -98,6 +100,11 @@ get_images_metadata() and read_image().
 **Arguments**:
 
 - `fname` - filename
+- `verify_checksums` - whether to verify the checksum attribute of data blocks that declare one (spec 10.5).
+  Verification happens when the block is read, not when the file is opened, and covers image and property data
+  blocks alike. When a digest does not match, the block is not made available and XISFError is raised; set to
+  False to downgrade the failure to an XISFWarning and return the data anyway. Passing False does not disable
+  the check that a compressed block is never decompressed after a failed verification (spec 10.6.1).
   
 
 **Returns**:
@@ -248,7 +255,8 @@ will be used if it actually reduces the data size.
   for 'lz4' ,'lz4hc' and 'zstd' compression algorithms.
 - `level` - for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9); for zstd, 1..22 (default: 3).
   Higher means more compression.
-- `pixel_storage` - pixel storage model of im_data, using the spec naming (spec 8.5.3). 'planar' (channels first) means a (channels, \*dims) array, which is the 'channels_first' layout used by keras and TensorFlow; 'normal' (channels last) means a (\*dims, channels) array, which is the 'channels_last' layout used by numpy, matplotlib and most image tooling. When given, im_data must have at least two dimensions and the channel count is the leading axis for 'planar' or the trailing axis for 'normal'. Defaults to None, which infers the layout from the shape: a 3-D array with a trailing dimension of 1 or 3 is read as (dim1, dim2, channels), one with a leading dimension of 1 or 3 as (channels, dim1, dim2), and anything else is treated as single-channel spatial dimensions.
+- `pixel_storage` - pixel storage model of im_data, using the spec naming (spec 8.5.3). 'planar' (channels first) means a (channels, \*dims) array, which is the 'channels_first' layout used by keras and TensorFlow; 'normal' (channels last) means a (\*dims, channels) array, which is the 'channels_last' layout used by numpy, matplotlib and most image tooling. When given, im_data must have at least two dimensions and the channel count is the leading axis for 'planar' or the trailing axis for 'normal'. Defaults to None, which infers the layout from the shape: a 3-D array with a trailing dimension of 1 or 3 is read as (dim1, dim2, channels),   one with a leading dimension of 1 or 3 as (channels, dim1, dim2), and anything else is treated as single-channel spatial dimensions.
+- `checksum` - the cryptographic hashing algorithm used for the checksum attribute of every data block written, one of 'sha-1' (the default, and the algorithm recommended by the spec), 'sha-256', 'sha-512', 'sha3-256' or 'sha3-512'. The alternate spellings without the hyphen are accepted too. True is the same as 'sha-1', and False or None writes no checksums. The digest is computed for the serialized block, so for a compressed block it is the digest of the compressed data (spec 10.6.1), and the algorithms applied are listed in the XISF:ChecksumAlgorithms file property.
 
 **Returns**:
 

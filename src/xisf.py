@@ -23,6 +23,7 @@ this program.  If not, see <http://www.gnu.org/licenses/>.
 from importlib.metadata import version
 __version__ = version(__name__)
 
+import hashlib
 import platform
 import re
 import xml.etree.ElementTree as ET
@@ -60,16 +61,23 @@ class XISF:
     - Monolithic XISF files only
         - XISF data blocks with attachment, inline or embedded block locations
         - Both pixel storage models (planar and normal), for images of any dimensionality N >= 1
+        - Data blocks in both byte orders, little- and big-endian (spec 10.4)
         - UInt8/16/32 and Float32/64 pixel sample formats
         - Grayscale and RGB color spaces
     - Decoding:
         - multiple Image core elements from a monolithic XISF file
         - Support all standard compression codecs defined in this specification for decompression
           (zlib/lz4[hc]/zstd + byte shuffling)
+        - Verification of the SHA-1, SHA-256 and SHA-512 checksums that a baseline
+          decoder shall support (spec 7.2), and of the optional SHA3-256 and
+          SHA3-512 ones. A compressed block is verified before it is decompressed
+          (spec 10.6.1).
     - Encoding:
         - Single image core element with an attached data block
         - Support all standard compression codecs defined in this specification for decompression
           (zlib/lz4[hc]/zstd + byte shuffling)
+        - SHA-1 checksums of every data block by default, with any of the five
+          algorithms of spec 10.5 available and checksums disableable
     - "Atomic" properties (scalar types, String, TimePoint), Vector and Matrix (e.g. astrometric
       solutions)
     - Metadata and FITSKeyword core elements
@@ -132,15 +140,29 @@ class XISF:
     _block_alignment_size = 4096
     _max_inline_block_size = 3072
 
-    def __init__(self, fname):
+    def __init__(self, fname, verify_checksums=True):
         """Opens a XISF file and extract its metadata. To get the metadata and the images, see get_file_metadata(),
         get_images_metadata() and read_image().
         Args:
             fname: filename
+            verify_checksums: whether to verify the checksum attribute of data blocks
+              that declare one (spec 10.5). Verification happens when the block is
+              read, not when the file is opened, and covers image and property
+              data blocks alike. When a digest does not match, the block is not
+              made available and XISFError is raised; set to False to downgrade
+              the failure to an XISFWarning and return the data anyway. Passing
+              False does not disable the check that a compressed block is never
+              decompressed after a failed verification (spec 10.6.1).
 
         Returns:
             XISF object.
         """
+        if not isinstance(verify_checksums, bool):
+            raise XISFError(
+                f"verify_checksums must be a bool, got"
+                f" {type(verify_checksums).__name__}"
+            )
+        self._verify_checksums = verify_checksums
         self._fname = fname
         self._headerlength = None
         self._xisf_header = None
@@ -396,15 +418,48 @@ class XISF:
         else:
             raise NotImplementedError(f"Data block location type '{method}' not implemented: {elem}")
 
-    @staticmethod
-    def _read_inline_data_block(elem, xml_elem):
+    def _verify_data_block_checksum(self, data, elem, owner):
+        """Verify the checksum attribute of a data block, if it declares one.
+
+        A decoder shall verify the checksum when the attribute is present
+        (spec 10.5), and the verification takes place before the block is made
+        available to the caller. This is called on the serialized block, before
+        decompression, so that altered compressed data is never decompressed
+        (spec 10.6.1).
+        """
+        if "checksum" not in elem:
+            return
+        algorithm, expected = self._parse_checksum(elem["checksum"], owner)
+        computed = self._compute_checksum(algorithm, data)
+        if computed == expected:
+            return
+        message = (
+            f"{owner} fails checksum verification: it declares"
+            f" {algorithm}:{expected} but its data block digests to"
+            f" {algorithm}:{computed}. The data has been altered or corrupted"
+            f" (XISF 1.0 spec, section 10.5)"
+        )
+        if not self._verify_checksums:
+            warnings.warn(
+                f"{message}. Returning the data anyway, since this XISF object"
+                f" was opened with verify_checksums=False",
+                XISFWarning,
+            )
+            return
+        raise XISFError(message)
+
+    def _block_owner(self, elem):
+        """A human-readable name for the element that serialized a data block."""
+        kind = elem.get("type") and "Property" or "Image"
+        return f"{kind} {elem.get('id', '<unknown>')}"
+
+    def _read_inline_data_block(self, elem, xml_elem):
         method, encoding = elem["location"]
         assert method == "inline"
         # An inline data block is serialized in the character contents of the element
-        return XISF._decode_inline_or_embedded_data(encoding, xml_elem.text, elem)
+        return self._decode_inline_or_embedded_data(encoding, xml_elem.text, elem)
 
-    @staticmethod
-    def _read_embedded_data_block(elem, xml_elem):
+    def _read_embedded_data_block(self, elem, xml_elem):
         assert elem["location"][0] == "embedded"
         # An embedded data block is serialized in the character contents of a child
         # Data element, which also carries the encoding and compression attributes
@@ -416,12 +471,13 @@ class XISF:
             data_dict["compression"] = XISF._parse_compression(
                 data_elem.attrib["compression"]
             )
-        return XISF._decode_inline_or_embedded_data(
+        # The checksum attribute belongs to the element that serializes the block,
+        # not to the child Data element (spec 10.5), so it is taken from elem
+        return self._decode_inline_or_embedded_data(
             data_elem.attrib["encoding"], data_elem.text, data_dict
         )
 
-    @staticmethod
-    def _decode_inline_or_embedded_data(encoding, data, elem):
+    def _decode_inline_or_embedded_data(self, encoding, data, elem):
         # Base16 data is serialized in lowercase (see the XISF 1.0 spec), so
         # casefold=True is required to accept it
         encodings = {
@@ -434,6 +490,10 @@ class XISF:
             )
 
         data = encodings[encoding](data)
+        # The digest is taken over the decoded binary data, not over its Base64 or
+        # Base16 text (spec 10.5), and before decompression, since a compressed
+        # block is verified as the compressed data (spec 10.6.1)
+        self._verify_data_block_checksum(data, elem, self._block_owner(elem))
         if "compression" in elem:
             data = XISF._decompress(data, elem)
 
@@ -449,6 +509,8 @@ class XISF:
             f.seek(pos)
             data = f.read(size)
 
+        # Verified as the serialized block, before decompression (spec 10.6.1)
+        self._verify_data_block_checksum(data, elem, self._block_owner(elem))
         if "compression" in elem:
             data = XISF._decompress(data, elem)
 
@@ -702,6 +764,7 @@ class XISF:
         shuffle=False,
         level=None,
         pixel_storage=None,
+        checksum="sha-1",
     ):
         """Writes an image (numpy array) to a XISF file. Compression may be requested but it only
         will be used if it actually reduces the data size.
@@ -742,12 +805,23 @@ class XISF:
               with a trailing dimension of 1 or 3 is read as (dim1, dim2, channels),
               one with a leading dimension of 1 or 3 as (channels, dim1, dim2), and
               anything else is treated as single-channel spatial dimensions.
+            checksum: the cryptographic hashing algorithm used for the checksum
+              attribute of every data block written, one of 'sha-1' (the default,
+              and the algorithm recommended by the spec), 'sha-256', 'sha-512',
+              'sha3-256' or 'sha3-512'. The alternate spellings without the
+              hyphen are accepted too. True is the same as 'sha-1', and False or
+              None writes no checksums. The digest is computed for the serialized
+              block, so for a compressed block it is the digest of the compressed
+              data (spec 10.6.1), and the algorithms applied are listed in the
+              XISF:ChecksumAlgorithms file property.
         Returns:
             bytes_written: the total number of bytes written into the output file.
             codec: The codec actually used, i.e., None if compression did not reduce the data block size so
               compression was not finally used.
 
         """
+        checksum_algorithm = XISF._validate_checksum_algorithm(checksum)
+
         if image_metadata is None:
             image_metadata = {}
 
@@ -950,6 +1024,48 @@ class XISF:
             assert length >= 0
             return (0).to_bytes(length, byteorder="little")
 
+        # Add the checksum attribute to every element that serializes a data
+        # block. It is done in one pass over the assembled header rather than in
+        # each of the branches that build a data block, so that image and
+        # property blocks are all covered, and only for elements that actually
+        # have one. The digest is taken over the serialized block: the decoded
+        # binary data rather than its Base64 or Base16 text for an inline or
+        # embedded block (spec 10.5), and the compressed data for a compressed
+        # block (spec 10.6.1).
+        def _add_checksums(header_xml, attached_blocks_locations, algorithm):
+            if algorithm is None:
+                return set()
+            algorithms = set()
+
+            def _digest_of(data):
+                algorithms.add(algorithm)
+                return f"{algorithm}:{XISF._compute_checksum(algorithm, data)}"
+
+            # Attached blocks: their serialized bytes are the bytes to be written.
+            # A Vector or Matrix property block is held as an ndarray and written
+            # as its buffer, so it is converted the same way before hashing.
+            for block in attached_blocks_locations:
+                data = block["data"]
+                if isinstance(data, np.ndarray):
+                    data = data.tobytes()
+                block["xml"].attrib["checksum"] = _digest_of(data)
+
+            # Inline and embedded blocks: the serialized bytes are the element text
+            # encoded, so they are recovered from it
+            for elem in header_xml.iter():
+                location = elem.attrib.get("location")
+                if not location or not location.startswith("inline:"):
+                    continue
+                encoding = location.partition(":")[2]
+                encodings = {
+                    "base64": lambda t: base64.b64decode(t),
+                    "hex": lambda t: base64.b16decode(t, casefold=True),
+                }
+                data = encodings[encoding](elem.text or "")
+                elem.attrib["checksum"] = _digest_of(data)
+
+            return algorithms
+
         # __/ Prepare image and its metadata \__________
         im_id = image_metadata.get("id", "image")
         XISF._validate_image_id(im_id)
@@ -1000,6 +1116,27 @@ class XISF:
                 metadata_xml, property_dict, max_inline_blk_sz
             ):
                 attached_blocks_locations.append(attached_block)
+
+        # Checksum every data block that has been written to the header, now that
+        # the image and all the properties are assembled. Adding the attribute
+        # changes the header size, so it is done before the provisional header
+        # size is measured below.
+        checksum_algorithms = _add_checksums(
+            xisf_header_xml, attached_blocks_locations, checksum_algorithm
+        )
+        if checksum_algorithms:
+            # If the unit contains data blocks with checksums, this property
+            # should enumerate the applied algorithms (spec 11.2). It is added
+            # after the checksums, since it is a String property serialized as
+            # character contents rather than as a data block.
+            ET.SubElement(
+                metadata_xml,
+                "Property",
+                {
+                    "id": "XISF:ChecksumAlgorithms",
+                    "type": "String",
+                },
+            ).text = ",".join(sorted(checksum_algorithms))
 
         # Header provisional size (without attachment positions)
         xisf_header = ET.tostring(xisf_header_xml, encoding="utf8")
@@ -1505,6 +1642,100 @@ class XISF:
             return (cl[0], int(cl[1]), None)
 
     # Return equivalent numpy dtype
+    # Cryptographic hashing algorithms of spec 10.5 Table 9, mapping every
+    # accepted spelling to the hashlib constructor to use. The first key of each
+    # pair is the canonical checksum algorithm value, and the second its
+    # alternate. SHA-1, SHA-256 and SHA-512 shall be supported by all decoders,
+    # and SHA-1 by all encoders claiming support for checksums.
+    _checksum_algorithms = {
+        "sha-1": "sha1",
+        "sha1": "sha1",
+        "sha-256": "sha256",
+        "sha256": "sha256",
+        "sha-512": "sha512",
+        "sha512": "sha512",
+        "sha3-256": "sha3_256",
+        "sha3-512": "sha3_512",
+    }
+    # hashlib gained sha3_256 and sha3_512 in Python 3.6, but their presence
+    # depends on the OpenSSL build, so they are checked rather than assumed.
+    _optional_checksum_algorithms = ("sha3-256", "sha3-512")
+
+    @classmethod
+    def _parse_checksum(cls, checksum, owner):
+        """Parse a checksum attribute into an (algorithm, digest) pair.
+
+        The syntax is 'algorithm:digest' (spec 10.5), where the digest is
+        Base16 encoded with lowercase hexadecimal digits.
+        """
+        algorithm, sep, digest = checksum.partition(":")
+        if not sep or not algorithm or not digest:
+            raise XISFError(
+                f"{owner} has checksum={checksum!r}: the checksum attribute shall"
+                f" have the form 'algorithm:digest' (XISF 1.0 spec, section 10.5)"
+            )
+        if algorithm not in cls._checksum_algorithms:
+            raise XISFError(
+                f"{owner} declares unknown checksum algorithm {algorithm!r}: the"
+                f" supported algorithms are"
+                f" {', '.join(sorted(set(cls._checksum_algorithms)))}"
+                f" (XISF 1.0 spec, section 10.5)"
+            )
+        if algorithm in cls._optional_checksum_algorithms and not hasattr(
+            hashlib, cls._checksum_algorithms[algorithm]
+        ):
+            raise XISFError(
+                f"{owner} declares checksum algorithm {algorithm!r}, which this"
+                f" Python build does not provide"
+            )
+        return algorithm, digest.lower()
+
+    @staticmethod
+    def _validate_checksum_algorithm(algorithm):
+        """Normalize the encoder's checksum argument to a canonical algorithm name.
+
+        Accepts True as the spec-recommended SHA-1, and False or None to write no
+        checksums at all. The alternate spellings of Table 9 are accepted and
+        normalized to their canonical value.
+        """
+        if algorithm is None or algorithm is False:
+            return None
+        if algorithm is True:
+            # SHA-1 is the recommended general-purpose algorithm (spec 10.5)
+            return "sha-1"
+        if not isinstance(algorithm, str):
+            raise XISFError(
+                f"checksum must be a checksum algorithm name, True or False, got"
+                f" {type(algorithm).__name__}"
+            )
+        for canonical, aliases in (
+            ("sha-1", ("sha-1", "sha1")),
+            ("sha-256", ("sha-256", "sha256")),
+            ("sha-512", ("sha-512", "sha512")),
+            ("sha3-256", ("sha3-256",)),
+            ("sha3-512", ("sha3-512",)),
+        ):
+            if algorithm in aliases:
+                return canonical
+        raise XISFError(
+            f"unknown checksum algorithm {algorithm!r}: the supported algorithms"
+            f" are sha-1, sha-256, sha-512, sha3-256 and sha3-512 (XISF 1.0 spec,"
+            f" section 10.5)"
+        )
+
+    @classmethod
+    def _compute_checksum(cls, algorithm, data):
+        """Compute the Base16 digest of a serialized data block.
+
+        The digest is taken over the block as it is serialized, which for inline
+        and embedded blocks is the decoded binary data rather than its Base64 or
+        Base16 text (spec 10.5), and for a compressed block is the compressed data
+        (spec 10.6.1). Message digests are Base16 encoded with lowercase
+        hexadecimal digits.
+        """
+        digest = hashlib.new(cls._checksum_algorithms[algorithm], data).hexdigest()
+        return digest.lower()
+
     @staticmethod
     def _dtype_for_byte_order(dtype, byte_order):
         """Return the dtype to interpret a serialized block with.
