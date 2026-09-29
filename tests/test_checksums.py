@@ -10,13 +10,14 @@ checksum it finds.
 import base64
 import hashlib
 import re
+import zlib
 
 import numpy as np
 import pytest
 
 from xisf import XISF, XISFError, XISFWarning
 
-from .conftest import METADATA, image_element
+from .conftest import METADATA, image_element, write_monolithic
 
 # The five algorithms of spec 10.5 Table 9, as canonical name -> (constructor
 # name, alternate spelling, digest length in hex characters)
@@ -518,3 +519,100 @@ def test_uncompressed_block_is_still_returned_with_the_opt_out(tmp_path):
     with pytest.warns(XISFWarning, match="fails checksum verification"):
         back = XISF(str(path), verify_checksums=False).read_image(0)
     np.testing.assert_array_equal(back[..., 0], im)
+
+
+# --------------------------------------------------------------------------
+# Where the checksum attribute belongs on an embedded data block
+# --------------------------------------------------------------------------
+
+
+def embedded_image_element(data, parent_attrs="", child_attrs="", compression=None):
+    """An <Image> with an embedded data block in a child Data element.
+
+    Section 10.5 puts the checksum on the element that serializes the block,
+    which for an embedded block is the Image, not the child Data element. The
+    two are kept as separate arguments so that a test can place each attribute
+    where the specification puts it.
+    """
+    child = child_attrs + (f' compression="{compression}"' if compression else "")
+    return (
+        '<Image geometry="2:2:3" sampleFormat="UInt8" colorSpace="RGB"'
+        f' pixelStorage="Normal" location="embedded"{parent_attrs}>'
+        f'<Data encoding="base64"{child}>{data}</Data></Image>'
+    )
+
+
+def embedded_file(path, element):
+    write_monolithic(str(path), METADATA + element)
+    return str(path)
+
+
+def test_embedded_checksum_on_the_image_is_verified(tmp_path):
+    """An embedded block declares its checksum on the Image (spec 10.5)."""
+    im = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
+    element = embedded_image_element(
+        base64.b64encode(im.tobytes()).decode(),
+        parent_attrs=f' checksum="{sha1(im.tobytes())}"',
+    )
+    np.testing.assert_array_equal(
+        XISF(embedded_file(tmp_path / "ok.xisf", element)).read_image(0), im
+    )
+
+
+def test_embedded_checksum_failure_is_detected(tmp_path):
+    """A wrong checksum on an embedded block shall not go unnoticed."""
+    im = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
+    element = embedded_image_element(
+        base64.b64encode(im.tobytes()).decode(),
+        parent_attrs=f' checksum="{sha1(b"wrong")}"',
+    )
+    path = embedded_file(tmp_path / "bad.xisf", element)
+    with pytest.raises(XISFError, match="fails checksum verification"):
+        XISF(path).read_image(0)
+
+
+def test_embedded_compressed_checksum_is_verified_before_decompression(tmp_path):
+    """A compressed embedded block is verified on the compressed bytes.
+
+    The digest of an embedded block is computed for its decoded binary data
+    (spec 10.5), and for a compressed one for the compressed data
+    (spec 10.6.1), so it is the digest of the compressed bytes rather than of
+    the plain array.
+    """
+    im = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
+    compressed = zlib.compress(im.tobytes())
+    good = embedded_image_element(
+        base64.b64encode(compressed).decode(),
+        parent_attrs=f' checksum="{sha1(compressed)}"',
+        compression=f"zlib:{im.nbytes}",
+    )
+    np.testing.assert_array_equal(
+        XISF(embedded_file(tmp_path / "ok.xisf", good)).read_image(0), im
+    )
+
+    # The digest of the uncompressed data is the wrong one for this block
+    wrong = embedded_image_element(
+        base64.b64encode(compressed).decode(),
+        parent_attrs=f' checksum="{sha1(im.tobytes())}"',
+        compression=f"zlib:{im.nbytes}",
+    )
+    with pytest.raises(XISFError, match="fails checksum verification"):
+        XISF(embedded_file(tmp_path / "wrong.xisf", wrong)).read_image(0)
+
+
+def test_embedded_checksum_on_the_data_element_is_not_a_checksum(tmp_path):
+    """A checksum on the child Data element is not a block checksum.
+
+    Section 10.5 makes the checksum an attribute of the XML element that
+    serializes the block, and section 10.6 is the only place that moves an
+    attribute to the child Data element, for compression alone. A checksum
+    written on the child is therefore not a checksum of this block, and the
+    block is read without verifying it.
+    """
+    im = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
+    element = embedded_image_element(
+        base64.b64encode(im.tobytes()).decode(),
+        child_attrs=f' checksum="{sha1(b"wrong")}"',
+    )
+    path = embedded_file(tmp_path / "child.xisf", element)
+    np.testing.assert_array_equal(XISF(path).read_image(0), im)
