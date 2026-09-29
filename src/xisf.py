@@ -1227,37 +1227,35 @@ class XISF:
                 p_dict["value"] = self._read_data_block(p_dict, p_et).decode("utf-8")
         elif p_dict["type"] == "Boolean":
             p_dict["value"] = self._parse_boolean(p_dict)
-        elif "Vector" in p_dict["type"]:
-            # A Vector property shall not have a value attribute (spec 11.1.8),
-            # so it must be tested before the scalar fallback below
+        elif self._is_vector_or_matrix(p_dict["type"]):
+            # A Vector or Matrix property shall not have a value attribute (spec 11.1.8/11.1.9),
+            # so it must be tested before the scalar fallback below. The type is
+            # resolved first, since an alternate name need not contain the suffix
+            # that identifies it, as ByteArray does not.
+            canonical = self._canonical_vector_matrix_type(p_dict["type"])
             if "value" in p_et.attrib:
                 warnings.warn(
-                    f"Vector property {p_dict['id']} has a forbidden value attribute,"
-                    f" ignoring it",
+                    f"{canonical} property {p_dict['id']} has a forbidden value"
+                    f" attribute, ignoring it",
                     XISFWarning,
                 )
-            p_dict["length"] = self._require_int_attr(p_dict, "length", "11.1.8")
-            p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
-            self._process_location_compression(p_dict)
-            raw_data = self._read_data_block(p_dict, p_et)
-            p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=p_dict["length"])
-        elif "Matrix" in p_dict["type"]:
-            # A Matrix property shall not have a value attribute (spec 11.1.9),
-            # so it must be tested before the scalar fallback below
-            if "value" in p_et.attrib:
-                warnings.warn(
-                    f"Matrix property {p_dict['id']} has a forbidden value attribute,"
-                    f" ignoring it",
-                    XISFWarning,
+            p_dict["dtype"] = self._parse_vector_matrix_dtype(p_dict["type"])
+            if canonical.endswith("Vector"):
+                p_dict["length"] = self._require_int_attr(p_dict, "length", "11.1.8")
+                self._process_location_compression(p_dict)
+                raw_data = self._read_data_block(p_dict, p_et)
+                p_dict["value"] = np.frombuffer(
+                    raw_data, dtype=p_dict["dtype"], count=p_dict["length"]
                 )
-            p_dict["rows"] = self._require_int_attr(p_dict, "rows", "11.1.9")
-            p_dict["columns"] = self._require_int_attr(p_dict, "columns", "11.1.9")
-            length = p_dict["rows"] * p_dict["columns"]
-            p_dict["dtype"] = self._parse_vector_dtype(p_dict["type"])
-            self._process_location_compression(p_dict)
-            raw_data = self._read_data_block(p_dict, p_et)
-            p_dict["value"] = np.frombuffer(raw_data, dtype=p_dict["dtype"], count=length)
-            p_dict["value"] = p_dict["value"].reshape((p_dict["rows"], p_dict["columns"]))
+            else:
+                p_dict["rows"] = self._require_int_attr(p_dict, "rows", "11.1.9")
+                p_dict["columns"] = self._require_int_attr(p_dict, "columns", "11.1.9")
+                length = p_dict["rows"] * p_dict["columns"]
+                self._process_location_compression(p_dict)
+                raw_data = self._read_data_block(p_dict, p_et)
+                p_dict["value"] = np.frombuffer(
+                    raw_data, dtype=p_dict["dtype"], count=length
+                ).reshape((p_dict["rows"], p_dict["columns"]))
         elif "value" in p_et.attrib:
             # Scalars (Float64, UInt32, etc.) and Complex*
             p_dict["value"] = ast.literal_eval(p_dict["value"])
@@ -1351,7 +1349,52 @@ class XISF:
         # TODO ignores optional attributes (format, comment)
         scalars = ["Int", "Byte", "Short", "Float", "Boolean", "TimePoint"]
 
-        if any(t in p_dict["type"] for t in scalars):
+        if XISF._is_vector_or_matrix(p_dict["type"]):
+            # Vectors and matrices are tested before the scalars, because a type
+            # name is not a reliable discriminator: the alternate name ByteArray
+            # is a vector, and it contains "Byte", which is a scalar element type.
+            # The type is resolved here so that an alternate name is serialized
+            # under its canonical name, which is unambiguous to read back.
+            p_type = XISF._canonical_vector_matrix_type(p_dict["type"])
+            data = p_dict["value"]
+            sz = data.nbytes
+            if p_type.endswith("Matrix"):
+                # A matrix is serialized as a sequence of its elements in row
+                # order (spec 11.1.9), which is the memory order of the array as
+                # it is stored, so the bytes are taken as they are
+                shape_attrs = {
+                    "rows": str(data.shape[0]),
+                    "columns": str(data.shape[1]),
+                }
+            else:
+                shape_attrs = {"length": str(data.size)}
+            if sz > max_inline_block_size:
+                # Attach the property as a data block (position pending)
+                # TODO ignores compression
+                xml = ET.SubElement(
+                    parent,
+                    "Property",
+                    {
+                        "id": p_dict["id"],
+                        "type": p_type,
+                        **shape_attrs,
+                        "location": XISF._to_location(("attachment", "", sz)),
+                    },
+                )
+                return {"xml": xml, "location": 0, "size": sz, "data": data}
+            else:
+                # Inline data block (assuming base64)
+                ET.SubElement(
+                    parent,
+                    "Property",
+                    {
+                        "id": p_dict["id"],
+                        "type": p_type,
+                        **shape_attrs,
+                        "location": XISF._to_location(("inline", "base64")),
+                    },
+                ).text = str(base64.b64encode(data.tobytes()), "ascii")
+        elif any(t in p_dict["type"] for t in scalars):
             # scalars and TimePoint
             # TODO add check for scalar or TimePoint
             # The Boolean literals are lowercase in the spec (section 11.1.4),
@@ -1395,66 +1438,6 @@ class XISF:
                         "type": p_dict["type"],
                     },
                 ).text = text
-        elif "Vector" in p_dict["type"]:
-            # TODO ignores compression
-            data = p_dict["value"]
-            sz = data.nbytes
-            if sz > max_inline_block_size:
-                # Attach vector as data block (position pending)
-                xml = ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "length": str(data.size),
-                        "location": XISF._to_location(("attachment", "", sz)),
-                    },
-                )
-                return {"xml": xml, "location": 0, "size": sz, "data": data}
-            else:
-                # Inline data block (assuming base64)
-                ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "length": str(data.size),
-                        "location": XISF._to_location(("inline", "base64")),
-                    },
-                ).text = str(base64.b64encode(data.tobytes()), "ascii")
-        elif "Matrix" in p_dict["type"]:
-            # TODO ignores compression
-            data = p_dict["value"]
-            sz = data.nbytes
-            if sz > max_inline_block_size:
-                # Attach vector as data block (position pending)
-                xml = ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "rows": str(data.shape[0]),
-                        "columns": str(data.shape[1]),
-                        "location": XISF._to_location(("attachment", "", sz)),
-                    },
-                )
-                return {"xml": xml, "location": 0, "size": sz, "data": data}
-            else:
-                # Inline data block (assuming base64)
-                ET.SubElement(
-                    parent,
-                    "Property",
-                    {
-                        "id": p_dict["id"],
-                        "type": p_dict["type"],
-                        "rows": str(data.shape[0]),
-                        "columns": str(data.shape[1]),
-                        "location": XISF._to_location(("inline", "base64")),
-                    },
-                ).text = str(base64.b64encode(data.tobytes()), "ascii")
         else:
             warnings.warn(
                 f"Skipping unsupported property {p_dict}",
@@ -1841,39 +1824,93 @@ class XISF:
         except:
             raise NotImplementedError(f"sampleFormat for {dtype} not implemented")
 
-    @staticmethod
-    def _parse_vector_dtype(type_name):
-        # Translate alternate names to "canonical" type names
-        alternate_names = {
-            'ByteArray': 'UI8Vector',
-            'IVector': 'I32Vector',
-            'UIVector': 'UI32Vector',
-            'Vector': 'F64Vector',
-        }
-        try:
-            type_name = alternate_names[type_name]
-        except KeyError:
-            pass
+    # Alternate type names of the vector and matrix properties, mapping each of
+    # them to its canonical name (spec 8.4.4.5 Table 7 and 8.4.4.6 Table 8). The
+    # canonical name of a vector or matrix is the element type followed by the
+    # "Vector" or "Matrix" suffix, and every other type of those tables has no
+    # alternate name. This has to be resolved before the type of a property can
+    # be classified, because an alternate name does not necessarily contain the
+    # suffix that identifies it: ByteArray is a vector, not a matrix.
+    _vector_matrix_alternate_names = {
+        # Vectors, spec 8.4.4.5 Table 7
+        "ByteArray": "UI8Vector",
+        "IVector": "I32Vector",
+        "UIVector": "UI32Vector",
+        "Vector": "F64Vector",
+        # Matrices, spec 8.4.4.6 Table 8
+        "ByteMatrix": "UI8Matrix",
+        "IMatrix": "I32Matrix",
+        "UIMatrix": "UI32Matrix",
+        "Matrix": "F64Matrix",
+    }
 
-        type_prefix = type_name[:-6]  # removes "Vector" and "Matrix" suffixes
-        _dtypes = {
-            "I8": np.dtype("int8"),
-            "UI8": np.dtype("uint8"),
-            "I16": np.dtype("int16"),
-            "UI16": np.dtype("uint16"),
-            "I32": np.dtype("int32"),
-            "UI32": np.dtype("uint32"),
-            "I64": np.dtype("int64"),
-            "UI64": np.dtype("uint64"),
-            "F32": np.dtype("float32"),
-            "F64": np.dtype("float64"),
-            "C32": np.dtype("csingle"),
-            "C64": np.dtype("cdouble"),
-        }
+    # Element types of the vector and matrix properties, and the numpy dtype of
+    # each one that this package implements. Tables 7 and 8 declare the same
+    # element types for vectors and matrices. Support for the 128-bit types is
+    # optional and is not implemented here; they are listed separately below so
+    # that they are still recognized as vectors and matrices.
+    _vector_matrix_dtypes = {
+        "I8": np.dtype("int8"),
+        "UI8": np.dtype("uint8"),
+        "I16": np.dtype("int16"),
+        "UI16": np.dtype("uint16"),
+        "I32": np.dtype("int32"),
+        "UI32": np.dtype("uint32"),
+        "I64": np.dtype("int64"),
+        "UI64": np.dtype("uint64"),
+        "F32": np.dtype("float32"),
+        "F64": np.dtype("float64"),
+        "C32": np.dtype("csingle"),
+        "C64": np.dtype("cdouble"),
+    }
+    _vector_matrix_prefixes_128 = frozenset(
+        {"I128", "UI128", "F128", "C128"}
+    )
+    _vector_prefixes = frozenset(_vector_matrix_dtypes) | _vector_matrix_prefixes_128
+    _matrix_prefixes = _vector_prefixes
+
+    @classmethod
+    def _canonical_vector_matrix_type(cls, type_name):
+        """Resolve a vector or matrix property type to its canonical name.
+
+        Returns None for any other type, so that the caller can classify the
+        property without having to guess from the spelling of its name. The
+        128-bit types of Tables 7 and 8 are not in the table below, so they
+        resolve to their canonical name and are then reported as unsupported.
+        """
+        return cls._vector_matrix_alternate_names.get(type_name, type_name)
+
+    @classmethod
+    def _is_vector_or_matrix(cls, type_name):
+        """Whether a property type names a vector or a matrix property.
+
+        Classified from the canonical name of the type, so that an alternate
+        name is recognized as well. A name is one only if it is an element type
+        of Tables 7 and 8 followed by the matching suffix, so a name that merely
+        ends with the suffix is not enough. The 128-bit element types are
+        included, since they are vectors and matrices that this package does not
+        implement; classifying them here is what makes them fail as an
+        unimplemented data type rather than as an unknown property type.
+        """
+        canonical = cls._canonical_vector_matrix_type(type_name)
+        for suffix, prefixes in (("Vector", cls._vector_prefixes), ("Matrix", cls._matrix_prefixes)):
+            if canonical.endswith(suffix):
+                return canonical[: -len(suffix)] in prefixes
+        return False
+
+    @classmethod
+    def _parse_vector_matrix_dtype(cls, type_name):
+        """Return the numpy dtype of a vector or matrix property type."""
+        type_name = cls._canonical_vector_matrix_type(type_name)
+        # removes the "Vector" and "Matrix" suffixes
+        type_prefix = type_name[:-6]
         try:
-            return _dtypes[type_prefix]
-        except:
-            raise NotImplementedError(f"data type {type_name} not implemented")
+            return cls._vector_matrix_dtypes[type_prefix]
+        except KeyError:
+            raise NotImplementedError(
+                f"data type {type_name} not implemented"
+            ) from None
+
 
     # __/ Auxiliary functions for compression/shuffling \________
 

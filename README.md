@@ -49,7 +49,7 @@ What's supported:
     - Support all standard compression codecs defined in this specification for decompression 
       (zlib/lz4[hc]/zstd + byte shuffling)
     - SHA-1 checksums of every data block by default, with any of the five algorithms of spec 10.5 available (can be disabled)
-- "Atomic" properties (scalar types, String, TimePoint), Vector and Matrix (e.g. astrometric solutions)
+- "Atomic" properties (scalar types, String, TimePoint), Vector and Matrix (e.g. astrometric solutions), including the alternate type names of spec 8.4.4.5 and 8.4.4.6 (ByteArray, IVector, UIVector, Vector, ByteMatrix, IMatrix, UIMatrix, Matrix)
 - Metadata and FITSKeyword core elements
 
 What's not supported (at least by now):
