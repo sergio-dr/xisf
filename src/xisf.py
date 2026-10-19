@@ -68,6 +68,8 @@ class XISF:
         - multiple Image core elements from a monolithic XISF file
         - Support all standard compression codecs defined in this specification for decompression
           (zlib/lz4[hc]/zstd + byte shuffling)
+        - Compressed data blocks divided into subblocks (subblocks attribute, spec 10.6),
+          including the uncompressed subblocks of spec 10.6.1 (XISF 1.0 Revision 2)
         - Verification of the SHA-1, SHA-256 and SHA-512 checksums that a baseline
           decoder shall support (spec 7.2), and of the optional SHA3-256 and
           SHA3-512 ones. A compressed block is verified before it is decompressed
@@ -279,6 +281,12 @@ class XISF:
                     image_extended_meta["compression"] = self._parse_compression(
                         image.attrib["compression"]
                     )
+                    # The subblocks attribute can only accompany a compression
+                    # attribute (spec 10.6)
+                    if "subblocks" in image.attrib:
+                        image_extended_meta["subblocks"] = self._parse_subblocks(
+                            image.attrib["subblocks"]
+                        )
             except NotImplementedError as e:
                 # A decoder that finds an object it does not support shall treat
                 # that object as unavailable, report it, and keep the rest of the
@@ -518,6 +526,13 @@ class XISF:
             data_dict["compression"] = XISF._parse_compression(
                 data_elem.attrib["compression"]
             )
+            # The subblocks attribute belongs to the same element as the
+            # compression attribute it describes (spec 10.6)
+            data_dict.pop("subblocks", None)
+            if "subblocks" in data_elem.attrib:
+                data_dict["subblocks"] = XISF._parse_subblocks(
+                    data_elem.attrib["subblocks"]
+                )
         # The checksum attribute belongs to the element that serializes the block,
         # not to the child Data element (spec 10.5), so it is taken from elem
         return self._decode_inline_or_embedded_data(
@@ -1363,6 +1378,8 @@ class XISF:
         p_dict["location"] = XISF._require_location(p_dict)
         if "compression" in p_dict:
             p_dict["compression"] = XISF._parse_compression(p_dict["compression"])
+            if "subblocks" in p_dict:
+                p_dict["subblocks"] = XISF._parse_subblocks(p_dict["subblocks"])
 
     # Insert XISF properties in the XML tree
     @staticmethod
@@ -1681,6 +1698,33 @@ class XISF:
             # (codec, uncompressed_size, None)
             return (cl[0], int(cl[1]), None)
 
+    # Returns [(compressed_size, uncompressed_size), ...] for the compression
+    # subblocks described by a subblocks attribute, in storage order:
+    #   subblocks="c1,u1:c2,u2:...:cN,uN" (spec 10.6)
+    @staticmethod
+    def _parse_subblocks(s):
+        subblocks = []
+        for token in s.split(":"):
+            items = token.split(",")
+            try:
+                if len(items) != 2:
+                    raise ValueError
+                c, u = (int(item.strip()) for item in items)
+            except ValueError:
+                raise XISFError(
+                    f"Malformed subblocks attribute '{s}': each subblock shall be"
+                    f" described by its compressed and uncompressed lengths in bytes,"
+                    f" as 'c,u' (XISF 1.0 spec, section 10.6)"
+                ) from None
+            if c <= 0 or u <= 0:
+                raise XISFError(
+                    f"Invalid subblock '{token}' in subblocks attribute '{s}': the"
+                    f" lengths of a subblock shall be positive (XISF 1.0 spec,"
+                    f" section 10.6)"
+                )
+            subblocks.append((c, u))
+        return subblocks
+
     # Return equivalent numpy dtype
     # Cryptographic hashing algorithms of spec 10.5 Table 9, mapping every
     # accepted spelling to the hashlib constructor to use. The first key of each
@@ -1949,28 +1993,125 @@ class XISF:
         a = a.reshape((-1, item_size))
         return np.transpose(a).tobytes()
 
+    # Exceptions raised by the codecs when their input is not valid compressed data
+    _codec_errors = (zlib.error, lz4.block.LZ4BlockError, zstandard.ZstdError)
+
+    # LZ4/zlib/zstd decompression of a single compression subblock. The output
+    # is never much larger than expected_size, so that a corrupt or malicious
+    # subblock cannot exhaust memory, but it can still differ from it (lz4 can
+    # return fewer bytes), so callers must check the length of the result.
+    @staticmethod
+    def _decompress_subblock(codec, data, expected_size):
+        if codec.startswith("lz4"):
+            return lz4.block.decompress(data, uncompressed_size=expected_size)
+        if codec.startswith("zstd"):
+            # A frame that declares its content size is decompressed to that
+            # size, whatever max_output_size says, so it is checked first
+            declared = zstandard.frame_content_size(data)
+            if declared != -1 and declared != expected_size:
+                raise zstandard.ZstdError(
+                    f"the frame declares a content size of {declared} bytes"
+                )
+            return zstandard.decompress(data, max_output_size=expected_size)
+        # One byte more than expected is enough to detect a longer stream
+        decompressor = zlib.decompressobj()
+        decompressed = decompressor.decompress(data, expected_size + 1)
+        if len(decompressed) <= expected_size and not decompressor.eof:
+            raise zlib.error("incomplete or truncated stream")
+        return decompressed
+
     # LZ4/zlib/zstd decompression
     @staticmethod
     def _decompress(data, elem):
         # (codec, uncompressed-size, item-size); item-size is None if not using byte shuffling
         codec, uncompressed_size, item_size = elem["compression"]
 
-        if codec.startswith("lz4"):
-            data = lz4.block.decompress(data, uncompressed_size=uncompressed_size)
-        elif codec.startswith("zstd"):
-            data = zstandard.decompress(data, max_output_size=uncompressed_size)
-        elif codec.startswith("zlib"):
-            data = zlib.decompress(data)
-        else:
-            # The failure is reported against the object that owns the block, so
-            # that the user can tell which one is unavailable while the rest of
-            # the XISF unit stays accessible (spec 7)
-            kind = elem.get("type") and "Property" or "Image"
+        # The failure is reported against the object that owns the block, so
+        # that the user can tell which one is unavailable while the rest of
+        # the XISF unit stays accessible (spec 7)
+        kind = elem.get("type") and "Property" or "Image"
+        owner = f"{kind} {elem.get('id', '<unknown>')}"
+        if not codec.startswith(("lz4", "zstd", "zlib")):
             raise NotImplementedError(
-                f"{kind} {elem.get('id', '<unknown>')} is not supported: "
+                f"{owner} is not supported: "
                 f"unimplemented compression codec {codec}"
             )
 
+        # A compressed data block without a subblocks attribute is equivalent to
+        # a single subblock with the length of the block and the uncompressed
+        # size of its compression attribute (spec 10.6.1)
+        subblocks = elem.get("subblocks") or [(len(data), uncompressed_size)]
+        if sum(c for c, _ in subblocks) != len(data):
+            raise XISFError(
+                f"{owner} has an invalid compressed data block: its subblocks"
+                f" attribute declares {sum(c for c, _ in subblocks)} bytes of"
+                f" compressed data, but the block has {len(data)} bytes"
+                f" (XISF 1.0 spec, section 10.6)"
+            )
+        if sum(u for _, u in subblocks) != uncompressed_size:
+            raise XISFError(
+                f"{owner} has an invalid compressed data block: its subblocks"
+                f" attribute declares {sum(u for _, u in subblocks)} bytes of"
+                f" uncompressed data, but its compression attribute declares"
+                f" {uncompressed_size} (XISF 1.0 spec, section 10.6)"
+            )
+
+        # Subblocks are stored contiguously, in the order given by the subblocks
+        # attribute, and each one is compressed independently (spec 10.6)
+        view = memoryview(data)
+        chunks = []
+        offset = 0
+        for i, (c, u) in enumerate(subblocks):
+            stored = view[offset:offset + c]
+            offset += c
+            if c == u:
+                # An uncompressed subblock stores its data unmodified (spec
+                # 10.6.1). Encoders implementing earlier revisions of the spec
+                # could also generate compressed subblocks of this length, so a
+                # decoder may try to decompress the subblock first, and use the
+                # result only if it has exactly the expected length; otherwise
+                # the subblock is read as uncompressed data.
+                #
+                # That is only attempted for zlib and zstd, whose formats reject
+                # unrelated data (a zlib stream has a header check and an Adler-32
+                # checksum, a zstd frame a magic number). The LZ4 block format has
+                # no integrity check, and a short uncompressed subblock can be a
+                # valid LZ4 stream of exactly its own length (PixInsight stores
+                # every subblock shorter than 64 bytes uncompressed), so LZ4
+                # subblocks of equal lengths are always copied, as PixInsight does.
+                chunk = None
+                if not codec.startswith("lz4"):
+                    try:
+                        chunk = XISF._decompress_subblock(codec, stored, u)
+                    except XISF._codec_errors:
+                        pass
+                chunks.append(chunk if chunk is not None and len(chunk) == u else stored)
+            else:
+                # Every other subblock shall be decompressed, including those
+                # longer than their uncompressed data, which encoders implementing
+                # earlier revisions could generate, and it shall decompress to
+                # exactly its uncompressed length (spec 10.6.1)
+                try:
+                    chunk = XISF._decompress_subblock(codec, stored, u)
+                except XISF._codec_errors as e:
+                    raise XISFError(
+                        f"{owner} has an invalid compressed data block: subblock"
+                        f" {i + 1} of {len(subblocks)} cannot be decompressed"
+                        f" with the {codec} codec: {e}"
+                    ) from e
+                if len(chunk) != u:
+                    raise XISFError(
+                        f"{owner} has an invalid compressed data block: subblock"
+                        f" {i + 1} of {len(subblocks)} decompresses to"
+                        f" {len(chunk)} bytes instead of its uncompressed length of"
+                        f" {u} bytes (XISF 1.0 spec, section 10.6.1)"
+                    )
+                chunks.append(chunk)
+        data = b"".join(chunks)
+
+        # Byte shuffling is applied to the entire data block before its division
+        # into subblocks, so it is reversed after all subblocks have been
+        # decompressed and concatenated (spec 10.6)
         if item_size:  # using byte-shuffling
             data = XISF._unshuffle(data, item_size)
 
