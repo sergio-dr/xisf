@@ -143,7 +143,7 @@ def test_forbidden_value_does_not_crash_open(make_file):
         x = XISF(str(path))
     # The rest of the unit stays accessible, as section 7 requires
     assert x.read_image(0).shape == sample_image().shape
-    assert x.get_file_metadata()["XISF:Keep"]["value"] == 1
+    assert x.get_file_metadata()["XISF:CreatorApplication"]["value"] == "xisf test suite"
 
 
 def test_forbidden_value_in_file_metadata(make_file):

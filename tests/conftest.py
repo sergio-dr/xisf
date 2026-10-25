@@ -13,12 +13,17 @@ from xisf import XISF
 XISF_NS = "http://www.pixinsight.com/xisf"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 
+# XISF 1.0 spec, 9.5: "A valid XISF header must begin with the following XML
+# declaration: <?xml version="1.0" encoding="UTF-8"?>"
+XML_DECL = '<?xml version="1.0" encoding="UTF-8"?>'
+
 # Root element attributes as emitted by XISF.write(), with both namespace
 # declarations so hand-built headers can also use the xisf: prefix.
 ROOT_ATTRS = (
     f'xmlns="{XISF_NS}" '
     f'xmlns:xsi="{XSI_NS}" '
-    'xsi:schemaLocation="http://pixinsight.com/xisf '
+    'version="1.0" '
+    'xsi:schemaLocation="http://www.pixinsight.com/xisf '
     'http://pixinsight.com/xisf/xisf-1.0.xsd"'
 )
 
@@ -84,9 +89,25 @@ def encode_block(raw, encoding="base64", codec=None, item_size=None):
     raise ValueError(encoding)
 
 
+def _bounds_attr(im, bounds=None):
+    """Build the bounds attribute of an Image element (spec 11.5.2).
+
+    The representable range has no default for floating point samples, so
+    bounds is required for Float32 and Float64 images. Integer images default
+    to their full range and should omit the attribute. `bounds` overrides the
+    default, and `bounds` given as a string is always emitted.
+    """
+    if bounds is None:
+        sample_format = XISF._get_sampleFormat(np.dtype(im.dtype))
+        if not sample_format.startswith("Float"):
+            return ""
+        bounds = "0:1"
+    return f' bounds="{bounds}"'
+
+
 def image_element(
-    im, location="inline", encoding="base64", codec=None, item_size=None,
-    pixel_storage=None, byte_order=None,
+    im, location="embedded", encoding="base64", codec=None, item_size=None,
+    pixel_storage=None, byte_order=None, bounds=None,
 ):
     """Build an <Image> element with an inline or embedded data block.
 
@@ -94,6 +115,9 @@ def image_element(
     'Normal'. When None the attribute is omitted so that the spec default applies.
     byte_order selects the block byte order, 'big' or 'little'. When None the
     attribute is omitted so that the spec default of little-endian applies.
+    bounds overrides the representable range; by default a Float32/Float64
+    image gets bounds="0:1" because the spec requires one, while an integer
+    image omits the attribute because its default range applies.
     """
     h, w, c = im.shape
     if pixel_storage is None:
@@ -109,7 +133,8 @@ def image_element(
     )
     attrs = (
         f'geometry="{w}:{h}:{c}" '
-        f'sampleFormat="{XISF._get_sampleFormat(np.dtype(im.dtype))}" '
+        f'sampleFormat="{XISF._get_sampleFormat(np.dtype(im.dtype))}"'
+        f"{_bounds_attr(im, bounds)} "
         f'colorSpace="{color_space(c)}"'
         f"{storage_attr}"
     )
@@ -192,7 +217,12 @@ def _property_body(attrs, text, compression, location, encoding):
     raise ValueError(location)
 
 
-METADATA = '<Metadata><Property id="XISF:Keep" type="Int" value="1"/></Metadata>'
+METADATA = (
+    "<Metadata>"
+    '<Property id="XISF:CreationTime" type="TimePoint" value="2026-10-21T00:00:00Z"/>'
+    '<Property id="XISF:CreatorApplication" type="String">xisf test suite</Property>'
+    "</Metadata>"
+)
 
 
 def write_monolithic(path, body, attached=b""):
@@ -201,7 +231,7 @@ def write_monolithic(path, body, attached=b""):
     Returns the byte offset at which `attached` starts (4096-aligned, as
     XISF.write() aligns attached data blocks).
     """
-    xml = f"<xisf {ROOT_ATTRS}>{body}</xisf>".encode("utf-8")
+    xml = (XML_DECL + f"<xisf {ROOT_ATTRS}>{body}</xisf>").encode("utf-8")
     head = (
         XISF._signature
         + len(xml).to_bytes(4, "little")
@@ -234,7 +264,8 @@ def attached_image(path, im, codec=None, item_size=None):
     h, w, c = im.shape
     attrs = (
         f'geometry="{w}:{h}:{c}" '
-        f'sampleFormat="{XISF._get_sampleFormat(np.dtype(im.dtype))}" '
+        f'sampleFormat="{XISF._get_sampleFormat(np.dtype(im.dtype))}"'
+        f"{_bounds_attr(im)} "
         f'colorSpace="{color_space(c)}"'
         + (f' compression="{compression}"' if compression else "")
     )

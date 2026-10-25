@@ -809,6 +809,23 @@ class XISF:
             return "RGB"
         return "Gray"
 
+    @staticmethod
+    def _serialize_header(xisf_header_xml):
+        """Serialize an XISF header, including its XML declaration.
+
+        The XISF 1.0 specification, section 9.5, requires a valid XISF header
+        to begin with the following XML declaration::
+
+            <?xml version="1.0" encoding="UTF-8"?>
+
+        ET.tostring() writes its own declaration using single quotes and the
+        non-IANA encoding name 'utf8', so the required declaration is written
+        here and ET.tostring() is asked only for the document element.
+        """
+        declaration = b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        body = ET.tostring(xisf_header_xml, encoding="UTF-8")
+        return declaration + body
+
     # For float sample formats, bounds="0:1" is assumed
     @staticmethod
     def write(
@@ -1196,7 +1213,8 @@ class XISF:
             ).text = ",".join(sorted(checksum_algorithms))
 
         # Header provisional size (without attachment positions)
-        xisf_header = ET.tostring(xisf_header_xml, encoding="utf8")
+        xisf_header = XISF._serialize_header(xisf_header_xml)
+        print(xisf_header)
         header_provisional_sz = (
             len(XISF._signature) + XISF._headerlength_len + len(xisf_header) + XISF._reserved_len
         )
@@ -1208,7 +1226,7 @@ class XISF:
             # Write XISF signature
             f.write(XISF._signature)
 
-            xisf_header = ET.tostring(xisf_header_xml, encoding="utf8")
+            xisf_header = XISF._serialize_header(xisf_header_xml)
             headerlength = len(xisf_header)
             # Write header length
             f.write(headerlength.to_bytes(XISF._headerlength_len, byteorder="little"))
