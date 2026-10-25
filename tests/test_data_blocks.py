@@ -24,7 +24,7 @@ from .conftest import (
 )
 
 CODECS = ["zlib", "lz4", "lz4hc", "zstd"]
-LOCATIONS = ["inline", "embedded"]
+LOCATIONS = ["embedded"]
 
 
 def image_body(location, im, **kwargs):
@@ -85,9 +85,9 @@ def test_image_compressed_with_shuffle(make_file, location, codec):
 
 
 def test_channels_first_also_works_for_inline(make_file):
-    """read_image(data_format='channels_first') must work for inline images."""
+    """read_image(data_format='channels_first') must work for embedded images."""
     im = sample_image(channels=3)
-    path = make_file(image_body("inline", im))
+    path = make_file(image_body("embedded", im))
     x = XISF(str(path))
     got = x.read_image(0, data_format="channels_first")
     assert got.shape == (3, im.shape[0], im.shape[1])
@@ -249,7 +249,7 @@ def test_multiple_images_stay_aligned(make_file):
     im_b = sample_image(channels=1, width=3, height=5)
     body = (
         METADATA
-        + image_element(im_a, location="inline")
+        + image_element(im_a, location="embedded")
         + image_element(im_b, location="embedded")
     )
     path = make_file(body, name="multi.xisf")

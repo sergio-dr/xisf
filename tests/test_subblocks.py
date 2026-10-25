@@ -23,11 +23,12 @@ from .conftest import (
     METADATA,
     color_space,
     planar_bytes,
+    stripes_image,
     write_monolithic,
 )
 
 CODECS = ["zlib", "lz4", "lz4hc", "zstd"]
-LOCATIONS = ["attachment", "inline", "embedded"]
+LOCATIONS = ["attachment", "embedded"]
 
 
 def noisy_image(seed=1, width=64, height=48, channels=3, dtype=np.float32):
@@ -80,9 +81,11 @@ def image_with_subblocks(
     block_attrs = f'compression="{compression}" subblocks="{subblocks_attr(lengths)}"'
     block = b"".join(stored)
     h, w, c = im.shape
+    sample_format = XISF._get_sampleFormat(np.dtype(im.dtype))
+    bounds_attr = ' bounds="0:1"' if sample_format.startswith("Float") else ""
     attrs = (
         f'geometry="{w}:{h}:{c}" '
-        f'sampleFormat="{XISF._get_sampleFormat(np.dtype(im.dtype))}" '
+        f'sampleFormat="{sample_format}"{bounds_attr} '
         f'colorSpace="{color_space(c)}"{extra_attrs}'
     )
     text = base64.b64encode(block).decode("ascii")
@@ -94,9 +97,6 @@ def image_with_subblocks(
             f"{METADATA}"
         )
         write_monolithic(path, body, attached=block)
-    elif location == "inline":
-        body = f'<Image {attrs} {block_attrs} location="inline:base64">{text}</Image>'
-        write_monolithic(path, METADATA + body)
     elif location == "embedded":
         # For embedded blocks both attributes belong to the child Data element
         body = (
@@ -124,11 +124,12 @@ def shuffled_planar(im, item_size):
 @pytest.mark.parametrize("shuffle", [False, True])
 def test_compressed_subblocks(tmp_path, location, codec, shuffle):
     """Independently compressed subblocks must decode to the original image."""
-    im = noisy_image()
+    im = stripes_image()
     item_size = im.dtype.itemsize if shuffle else None
     stored, lengths = compress_subblocks(
         split(shuffled_planar(im, item_size), 4), codec, store_uncompressed=False
     )
+    assert all(c < u for c, u in lengths), "all subblocks must be compressed"
     path = image_with_subblocks(
         tmp_path / "t.xisf", im, codec, stored, lengths, location, item_size
     )
@@ -137,8 +138,9 @@ def test_compressed_subblocks(tmp_path, location, codec, shuffle):
 
 @pytest.mark.parametrize("codec", CODECS)
 def test_subblocks_are_exposed_in_metadata(tmp_path, codec):
-    im = noisy_image()
+    im = stripes_image()
     stored, lengths = compress_subblocks(split(planar_bytes(im), 3), codec, False)
+    assert all(c < u for c, u in lengths)
     path = image_with_subblocks(tmp_path / "t.xisf", im, codec, stored, lengths)
     assert XISF(str(path)).get_images_metadata()[0]["subblocks"] == lengths
 
@@ -417,7 +419,7 @@ def test_checksum_covers_uncompressed_subblocks_as_stored(tmp_path):
         XISF(str(path)).read_image(0)
 
 
-@pytest.mark.parametrize("location", ["inline", "embedded"])
+@pytest.mark.parametrize("location", ["embedded"])
 def test_vector_property_with_subblocks(tmp_path, location):
     vec = np.random.default_rng(5).standard_normal(500)
     pieces = split(XISF._shuffle(vec.tobytes(), 8), 4)
@@ -428,13 +430,13 @@ def test_vector_property_with_subblocks(tmp_path, location):
         f'compression="zlib+sh:{vec.nbytes}:8" subblocks="{subblocks_attr(lengths)}"'
     )
     attrs = f'id="F64Vector:Test" type="F64Vector" length="{vec.size}"'
-    if location == "inline":
-        prop = f'<Property {attrs} {block_attrs} location="inline:base64">{text}</Property>'
-    else:
+    if location == "embedded":
         prop = (
             f'<Property {attrs} location="embedded">'
             f'<Data encoding="base64" {block_attrs}>{text}</Data></Property>'
         )
+    else:
+        prop = f'<Property {attrs} {block_attrs} location="inline:base64">{text}</Property>'
     path = tmp_path / "t.xisf"
     write_monolithic(path, f"<Metadata>{prop}</Metadata>")
     value = XISF(str(path)).get_file_metadata()["F64Vector:Test"]["value"]

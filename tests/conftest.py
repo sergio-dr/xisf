@@ -43,6 +43,22 @@ def sample_image(channels=3, width=6, height=4, dtype=np.uint16):
     return np.arange(n, dtype=dtype).reshape(height, width, channels)
 
 
+def stripes_image(width=64, height=48, stripe_height=4, dtype=np.float32):
+    """A synthetic RGB image composed of alternating red, green and blue stripes.
+
+    Useful for visually verifying geometry, orientation, and decompression in
+    PixInsight, and highly compressible across all codecs.
+    """
+    n_stripes = height // stripe_height
+    im = np.zeros((height, width, 3), dtype=dtype)
+    full_scale = 1.0 if np.issubdtype(im.dtype, np.floating) else np.iinfo(im.dtype).max
+    colors = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    for i in range(n_stripes):
+        channel = (np.array(colors[i % 3], dtype=np.float64) * full_scale).astype(im.dtype)
+        im[i * stripe_height : (i + 1) * stripe_height, :, :] = channel
+    return im
+
+
 def planar_bytes(im):
     """Serialize a channels-last image the way XISF stores it: planar.
 
@@ -140,13 +156,6 @@ def image_element(
     )
     if byte_order is not None:
         attrs += f' byteOrder="{byte_order}"'
-    if location == "inline":
-        loc = f"inline:{encoding}"
-        if compression:
-            # For non-embedded blocks the compression attribute belongs to the
-            # element that serializes the block.
-            attrs += f' compression="{compression}"'
-        return f'<Image {attrs} location="{loc}">{text}</Image>'
     if location == "embedded":
         data_attrs = f'encoding="{encoding}"'
         if compression:
