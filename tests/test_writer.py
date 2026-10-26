@@ -711,31 +711,68 @@ def test_compression_level_property_rejects_an_unknown_codec():
         XISF._compression_level_property("brotli")
 
 
-def test_lz4_compressed_block_has_no_compression_level(tmp_path):
+@pytest.mark.parametrize("shuffle", [False, True])
+def test_lz4_compressed_block_has_no_compression_level(tmp_path, shuffle):
     """lz4 has no level, so only XISF:CompressionCodecs is defined."""
     im = np.tile(np.arange(64, dtype=np.float32), (64, 1))
     path = tmp_path / "lz4.xisf"
-    _, used = XISF.write(str(path), im, "t", codec="lz4")
-    assert used == "lz4"
+    _, used = XISF.write(str(path), im, "t", codec="lz4", shuffle=shuffle)
+    assert used == ("lz4+sh" if shuffle else "lz4")
 
     meta = XISF(str(path)).get_file_metadata()
-    assert meta["XISF:CompressionCodecs"]["value"] == "lz4"
+    assert meta["XISF:CompressionCodecs"]["value"] == used
     assert "XISF:CompressionLevel" not in meta
 
 
+@pytest.mark.parametrize("shuffle", [False, True])
 @pytest.mark.parametrize("codec", ["zlib", "lz4", "lz4hc", "zstd"])
-def test_compression_properties_omitted_when_compression_is_not_used(tmp_path, codec):
+def test_compression_properties_omitted_when_compression_is_not_used(
+    tmp_path, codec, shuffle
+):
     """No compressed block means no compression metadata (spec 11.4.1).
 
     Compression is only applied when it reduces the block size, so for
-    incompressible data the requested codec must not be declared.
+    incompressible data the requested codec must not be declared, with or
+    without byte shuffling.
     """
     rng = np.random.default_rng(0)
     im = rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)
     path = tmp_path / "raw.xisf"
-    _, used = XISF.write(str(path), im, "t", codec=codec)
+    _, used = XISF.write(str(path), im, "t", codec=codec, shuffle=shuffle)
     assert used is None
 
     meta = XISF(str(path)).get_file_metadata()
     assert "XISF:CompressionCodecs" not in meta
     assert "XISF:CompressionLevel" not in meta
+
+
+@pytest.mark.parametrize("codec", [None, "zlib", "lz4"])
+def test_stale_compression_properties_are_removed(tmp_path, codec):
+    """Compression metadata from supplied xisf_metadata must not survive.
+
+    write() updates the given xisf_metadata dict in place, so a codec declared
+    before a write that ends up without compressed blocks has to be dropped.
+    """
+    rng = np.random.default_rng(0)
+    im = rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)
+    metadata = {
+        "XISF:CompressionCodecs": {
+            "id": "XISF:CompressionCodecs",
+            "type": "String",
+            "value": "zstd",
+        },
+        "XISF:CompressionLevel": {
+            "id": "XISF:CompressionLevel",
+            "type": "Int",
+            "value": 90,
+        },
+    }
+    path = tmp_path / "stale.xisf"
+    _, used = XISF.write(str(path), im, "t", codec=codec, xisf_metadata=metadata)
+    assert used is None
+
+    meta = XISF(str(path)).get_file_metadata()
+    assert "XISF:CompressionCodecs" not in meta
+    assert "XISF:CompressionLevel" not in meta
+    assert "XISF:CompressionCodecs" not in metadata
+    assert "XISF:CompressionLevel" not in metadata
