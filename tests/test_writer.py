@@ -645,3 +645,97 @@ def test_zero_channels_is_rejected(tmp_path):
             "t",
             pixel_storage="normal",
         )
+
+
+# --------------------------------------------------------------------------
+# XISF:CompressionCodecs / XISF:CompressionLevel file metadata (spec 11.4.1)
+# --------------------------------------------------------------------------
+
+
+def test_compression_codecs_property_records_the_shuffle_modifier(tmp_path):
+    """The property enumerates codec identifiers, with '+sh' when shuffling.
+
+    Spec 11.4.1 gives 'zstd+sh,lz4hc' as an example, so the byte-shuffling
+    modifier belongs in the property value. Looking up the default level must
+    still use the base codec name, since '+sh' is not a codec.
+    """
+    im = np.tile(np.arange(64, dtype=np.float32), (64, 1))
+    path = tmp_path / "sh.xisf"
+    _, codec = XISF.write(str(path), im, "t", codec="zlib", shuffle=True)
+    assert codec == "zlib+sh"
+
+    meta = XISF(str(path)).get_file_metadata()
+    assert meta["XISF:CompressionCodecs"]["value"] == "zlib+sh"
+    # zlib default level 6 maps linearly from 0..9 onto 1..100
+    assert meta["XISF:CompressionLevel"]["value"] == 67
+
+
+def test_compression_level_property_uses_the_abstract_scale(tmp_path):
+    """The raw codec level is mapped onto the spec's 1..100 scale.
+
+    zstd level 7 is 1 + round(6 * 99 / 21) = 29 on the codec-independent scale
+    (spec 11.4.1), not the raw 7.
+    """
+    im = np.tile(np.arange(64, dtype=np.float32), (64, 1))
+    path = tmp_path / "lv.xisf"
+    XISF.write(str(path), im, "t", codec="zstd", shuffle=True, level=7)
+
+    meta = XISF(str(path)).get_file_metadata()
+    assert meta["XISF:CompressionCodecs"]["value"] == "zstd+sh"
+    assert meta["XISF:CompressionLevel"]["value"] == 29
+
+
+@pytest.mark.parametrize(
+    "codec_str, level, expected",
+    [
+        ("zlib", None, 67),        # default 6 of 0..9
+        ("zlib", 0, 1),            # minimum
+        ("zlib", 9, 100),          # maximum
+        ("zlib+sh", None, 67),     # modifier is not part of the codec name
+        ("lz4hc", None, 73),       # default 9 of 1..12
+        ("lz4hc", 1, 1),
+        ("lz4hc", 12, 100),
+        ("zstd", None, 10),        # default 3 of 1..22
+        ("zstd+sh", 22, 100),
+        ("lz4", None, None),       # lz4 has no compression level
+        ("lz4+sh", 5, None),
+    ],
+)
+def test_compression_level_property_mapping(codec_str, level, expected):
+    """Every codec's native range is mapped linearly onto 1..100."""
+    assert XISF._compression_level_property(codec_str, level) == expected
+
+
+def test_compression_level_property_rejects_an_unknown_codec():
+    with pytest.raises(NotImplementedError, match="Unimplemented compression codec"):
+        XISF._compression_level_property("brotli")
+
+
+def test_lz4_compressed_block_has_no_compression_level(tmp_path):
+    """lz4 has no level, so only XISF:CompressionCodecs is defined."""
+    im = np.tile(np.arange(64, dtype=np.float32), (64, 1))
+    path = tmp_path / "lz4.xisf"
+    _, used = XISF.write(str(path), im, "t", codec="lz4")
+    assert used == "lz4"
+
+    meta = XISF(str(path)).get_file_metadata()
+    assert meta["XISF:CompressionCodecs"]["value"] == "lz4"
+    assert "XISF:CompressionLevel" not in meta
+
+
+@pytest.mark.parametrize("codec", ["zlib", "lz4", "lz4hc", "zstd"])
+def test_compression_properties_omitted_when_compression_is_not_used(tmp_path, codec):
+    """No compressed block means no compression metadata (spec 11.4.1).
+
+    Compression is only applied when it reduces the block size, so for
+    incompressible data the requested codec must not be declared.
+    """
+    rng = np.random.default_rng(0)
+    im = rng.integers(0, 256, (64, 64, 3), dtype=np.uint8)
+    path = tmp_path / "raw.xisf"
+    _, used = XISF.write(str(path), im, "t", codec=codec)
+    assert used is None
+
+    meta = XISF(str(path)).get_file_metadata()
+    assert "XISF:CompressionCodecs" not in meta
+    assert "XISF:CompressionLevel" not in meta

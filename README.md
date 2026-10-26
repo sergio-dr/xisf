@@ -255,14 +255,13 @@ will be used if it actually reduces the data size.
 - `codec` - compression codec ('zlib', 'lz4', 'lz4hc' or 'zstd'), or None to disable compression
 - `shuffle` - whether to apply byte-shuffling before compression (ignored if codec is None). Recommended
   for 'lz4' ,'lz4hc' and 'zstd' compression algorithms.
-- `level` - for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9); for zstd, 1..22 (default: 3).
-  Higher means more compression.
+- `level` - codec-native compression level, or None for the codec default. For zlib, 0..9 (default: 6), where 0 requests no compression; for lz4hc, 1..12 (default: 9); for zstd, 1..22 (default: 3). Higher means more compression. Ignored for lz4, which has no compression level. The level is reported in the codec-independent XISF:CompressionLevel file property on the spec's 1..100 scale (spec 11.4.1).
 - `pixel_storage` - pixel storage model of im_data, using the spec naming (spec 8.5.3). 'planar' (channels first) means a (channels, \*dims) array, which is the 'channels_first' layout used by keras and TensorFlow; 'normal' (channels last) means a (\*dims, channels) array, which is the 'channels_last' layout used by numpy, matplotlib and most image tooling. When given, im_data must have at least two dimensions and the channel count is the leading axis for 'planar' or the trailing axis for 'normal'. Defaults to None, which infers the layout from the shape: a 3-D array with a trailing dimension of 1 or 3 is read as (dim1, dim2, channels),   one with a leading dimension of 1 or 3 as (channels, dim1, dim2), and anything else is treated as single-channel spatial dimensions.
 - `checksum` - the cryptographic hashing algorithm used for the checksum attribute of every data block written, one of 'sha-1' (the default, and the algorithm recommended by the spec), 'sha-256', 'sha-512', 'sha3-256' or 'sha3-512'. The alternate spellings without the hyphen are accepted too. True is the same as 'sha-1', and False or None writes no checksums. The digest is computed for the serialized block, so for a compressed block it is the digest of the compressed data (spec 10.6.1), and the algorithms applied are listed in the XISF:ChecksumAlgorithms file property.
 
 **Returns**:
 
 - `bytes_written` - the total number of bytes written into the output file.
-- `codec` - The codec actually used, i.e., None if compression did not reduce the data block size so
-  compression was not finally used.
+- `codec` - The codec actually used, with the '+sh' modifier when byte-shuffling was applied, i.e.,
+  None if compression did not reduce the data block size so compression was not finally used.
 

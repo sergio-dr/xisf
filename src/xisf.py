@@ -134,10 +134,19 @@ class XISF:
         "xsi:schemaLocation": "http://www.pixinsight.com/xisf http://pixinsight.com/xisf/xisf-1.0.xsd",
     }
     _compression_def_level = {
-        "zlib": 6,  # 1..9, default: 6 as indicated in https://docs.python.org/3/library/zlib.html
+        "zlib": 6,  # 0..9, default: 6 as indicated in https://docs.python.org/3/library/zlib.html
         "lz4": 0,  # no other values, as indicated in https://python-lz4.readthedocs.io/en/stable/lz4.block.html
         "lz4hc": 9,  # 1..12, (4-9 recommended), default: 9 as indicated in https://python-lz4.readthedocs.io/en/stable/lz4.block.html
         "zstd": 3,  # 1..22, (3-9 recommended), default: 3 as indicated in https://facebook.github.io/zstd/zstd_manual.html
+    }
+    # Native level range of each codec, as accepted by the codec libraries.
+    # XISF:CompressionLevel is written on the codec-independent 1..100 scale
+    # of the spec (11.4.1), onto which this range is mapped linearly by
+    # _compression_level_property. lz4 is absent because it has no level.
+    _compression_level_range = {
+        "zlib": (0, 9),
+        "lz4hc": (1, 12),
+        "zstd": (1, 22),
     }
     _block_alignment_size = 4096
     _max_inline_block_size = 3072
@@ -881,8 +890,12 @@ class XISF:
             codec: compression codec ('zlib', 'lz4', 'lz4hc' or 'zstd'), or None to disable compression
             shuffle: whether to apply byte-shuffling before compression (ignored if codec is None). Recommended
               for 'lz4' ,'lz4hc' and 'zstd' compression algorithms.
-            level: for zlib, 1..9 (default: 6); for lz4hc, 1..12 (default: 9); for zstd, 1..22 (default: 3).
-              Higher means more compression.
+            level: codec-native compression level, or None for the codec default.
+              For zlib, 0..9 (default: 6), where 0 requests no compression; for lz4hc,
+              1..12 (default: 9); for zstd, 1..22 (default: 3). Higher means more
+              compression. Ignored for lz4, which has no compression level. The
+              level is reported in the codec-independent XISF:CompressionLevel file
+              property on the spec's 1..100 scale (spec 11.4.1).
             pixel_storage: pixel storage model of im_data, using the spec naming
               (spec 8.5.3). 'planar' (channels first) means a (channels, *dims) array,
               which is the 'channels_first' layout used by keras and TensorFlow;
@@ -1015,7 +1028,7 @@ class XISF:
             return data_block, data_size, codec_str
 
         # Overwrites/creates XISF metadata
-        def _update_xisf_metadata(creator_app, blk_sz, max_inline_blk_sz, codec, level):
+        def _update_xisf_metadata(creator_app, blk_sz, max_inline_blk_sz, codec_str, level):
             # Create file metadata
             xisf_metadata["XISF:CreationTime"] = {
                 "id": "XISF:CreationTime",
@@ -1053,25 +1066,28 @@ class XISF:
                 "type": "UInt16",
                 "value": max_inline_blk_sz,
             }
-            if codec is not None:
+            if codec_str is not None:
                 # Add XISF:CompressionCodecs and XISF:CompressionLevel to file metadata
                 xisf_metadata["XISF:CompressionCodecs"] = {
                     "id": "XISF:CompressionCodecs",
                     "type": "String",
-                    "value": codec,
+                    "value": codec_str,
                 }
-                xisf_metadata["XISF:CompressionLevel"] = {
-                    "id": "XISF:CompressionLevel",
-                    "type": "Int",
-                    "value": level if level else XISF._compression_def_level[codec],
-                }
+                # XISF:CompressionLevel is optional: codecs without a level
+                # (lz4) report none, so any stale value is dropped.
+                abstract_level = XISF._compression_level_property(codec_str, level)
+                if abstract_level is None:
+                    xisf_metadata.pop("XISF:CompressionLevel", None)
+                else:
+                    xisf_metadata["XISF:CompressionLevel"] = {
+                        "id": "XISF:CompressionLevel",
+                        "type": "Int",
+                        "value": abstract_level,
+                    }
             else:
-                # Remove compression metadata if exists
-                try:
-                    del xisf_metadata["XISF:CompressionCodecs"]
-                    del xisf_metadata["XISF:CompressionLevel"]
-                except:
-                    pass
+                # Remove compression metadata if there is no compressed block
+                xisf_metadata.pop("XISF:CompressionCodecs", None)
+                xisf_metadata.pop("XISF:CompressionLevel", None)
 
         def _compute_attached_positions(hdr_prov_sz, attached_blocks_locations):
             # Computes aligned position nearest to the given one
@@ -1199,7 +1215,7 @@ class XISF:
 
         #   File Metadata
         metadata_xml = ET.SubElement(xisf_header_xml, "Metadata")
-        _update_xisf_metadata(creator_app, blk_sz, max_inline_blk_sz, codec, level)
+        _update_xisf_metadata(creator_app, blk_sz, max_inline_blk_sz, codec_str, level)
         for property_dict in xisf_metadata.values():
             if attached_block := XISF._insert_property(
                 metadata_xml, property_dict, max_inline_blk_sz
@@ -1229,7 +1245,6 @@ class XISF:
 
         # Header provisional size (without attachment positions)
         xisf_header = XISF._serialize_header(xisf_header_xml)
-        print(xisf_header)
         header_provisional_sz = (
             len(XISF._signature) + XISF._headerlength_len + len(xisf_header) + XISF._reserved_len
         )
@@ -2135,23 +2150,54 @@ class XISF:
 
         return data
 
+    @staticmethod
+    def _compression_level_property(codec_str, level=None):
+        """Return the XISF:CompressionLevel value for a compressed block.
+
+        The property is a codec-independent compression level in the range
+        1..100, where 1 means minimum and 100 maximum compression (spec 11.4.1).
+        Each codec defines its own native level range, which is mapped linearly
+        onto that scale: zlib 0..9, lz4hc 1..12 and zstd 1..22.
+
+        Args:
+            codec_str: value of the compression attribute, i.e., the codec name
+              optionally followed by the '+sh' byte-shuffling modifier (spec
+              11.4.1, e.g. 'zstd+sh,lz4hc')
+            level: codec-native level, or None for the codec default
+
+        Returns:
+            The abstract 1..100 level, or None for lz4, which has no level.
+        """
+        base_codec = codec_str.partition("+")[0]
+        if base_codec not in XISF._compression_def_level:
+            raise NotImplementedError(f"Unimplemented compression codec {base_codec}")
+        if base_codec == "lz4":
+            # lz4 (fast mode) has no compression level, only an acceleration
+            # factor with no equivalent on the abstract scale, so no level is
+            # reported rather than an arbitrary one.
+            return None
+        native_level = level if level is not None else XISF._compression_def_level[base_codec]
+        min_level, max_level = XISF._compression_level_range[base_codec]
+        abstract_level = 1 + round((native_level - min_level) * 99 / (max_level - min_level))
+        return min(100, max(1, abstract_level))
+
     # LZ4/zlib/zstd compression
     @staticmethod
     def _compress(data, codec, level=None, shuffle=False, itemsize=None):
         compressed = XISF._shuffle(data, itemsize) if shuffle else data
 
         if codec == "lz4hc":
-            level = level if level else XISF._compression_def_level["lz4hc"]
+            level = level if level is not None else XISF._compression_def_level["lz4hc"]
             compressed = lz4.block.compress(
                 compressed, mode="high_compression", compression=level, store_size=False
             )
         elif codec == "lz4":
             compressed = lz4.block.compress(compressed, store_size=False)
         elif codec == "zstd":
-            level = level if level else XISF._compression_def_level["zstd"]
+            level = level if level is not None else XISF._compression_def_level["zstd"]
             compressed = zstandard.compress(compressed, level=level)
         elif codec == "zlib":
-            level = level if level else XISF._compression_def_level["zlib"]
+            level = level if level is not None else XISF._compression_def_level["zlib"]
             compressed = zlib.compress(compressed, level=level)
         else:
             raise NotImplementedError(f"Unimplemented compression codec {codec}")
