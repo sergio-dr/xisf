@@ -11,7 +11,7 @@ import inspect
 import numpy as np
 import pytest
 
-from xisf import XISF
+from xisf import XISF, XISFError
 
 from .conftest import (
     METADATA,
@@ -21,6 +21,7 @@ from .conftest import (
     sample_image,
     string_property_element,
     vector_property_element,
+    write_monolithic,
 )
 
 CODECS = ["zlib", "lz4", "lz4hc", "zstd"]
@@ -82,6 +83,108 @@ def test_image_compressed_with_shuffle(make_file, location, codec):
         image_body(location, im, codec=codec, item_size=im.dtype.itemsize)
     )
     np.testing.assert_array_equal(XISF(str(path)).read_image(0), im)
+
+
+# --------------------------------------------------------------------------
+# Compression attribute syntax (spec 10.6)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "attribute, expected",
+    [
+        ("zlib:108", ("zlib", 108, None)),
+        ("lz4:0", ("lz4", 0, None)),
+        ("lz4hc:512", ("lz4hc", 512, None)),
+        ("zstd:1073741824", ("zstd", 1073741824, None)),
+        ("zlib+sh:108:4", ("zlib+sh", 108, 4)),
+        ("lz4hc+sh:512:2", ("lz4hc+sh", 512, 2)),
+        ("zstd+sh:96:8", ("zstd+sh", 96, 8)),
+    ],
+)
+def test_parse_compression_attribute(attribute, expected):
+    """The size (and optional item size) are parsed into a tuple (spec 10.6)."""
+    assert XISF._parse_compression(attribute) == expected
+
+
+@pytest.mark.parametrize(
+    "attribute, message",
+    [
+        ("", "form 'codec:parameters'"),
+        ("zlib", "form 'codec:parameters'"),
+        (":108", "form 'codec:parameters'"),
+        ("zlib:", "form 'codec:parameters'"),
+        # The item size exists only for the byte-shuffling syntax, and the
+        # shuffling modifier requires one (spec 10.6.4 and following)
+        ("zlib:108:4", "codec:uncompressed-size"),
+        ("zlib+sh:108", "codec\\+sh:uncompressed-size:item-size"),
+        ("zlib+sh:108:4:2", "codec\\+sh:uncompressed-size:item-size"),
+        # Sizes are plain text unsigned integers
+        ("zlib:abc", "unsigned integer"),
+        ("zlib:12abc", "unsigned integer"),
+        ("zlib+sh:108:x", "unsigned integer"),
+        ("zlib:-1", "unsigned integer"),
+        ("zlib+sh:108:0", "positive"),
+        ("zlib+sh:108:-4", "positive"),
+    ],
+)
+def test_parse_malformed_compression_attribute(attribute, message):
+    """Malformed attributes raise XISFError, not a bare ValueError."""
+    with pytest.raises(XISFError, match=message):
+        XISF._parse_compression(attribute)
+
+
+def test_unknown_codec_parameters_are_not_interpreted():
+    """Parameters are codec-specific, so an unsupported codec keeps them opaque.
+
+    The block is what becomes unavailable at read time (spec 10.6), not the
+    whole unit, so parsing must not reject a valid parameter syntax it does
+    not know.
+    """
+    assert XISF._parse_compression("jpeg:quality=90:subsampling=420") == (
+        "jpeg",
+        None,
+        None,
+    )
+
+
+def test_malformed_compression_aborts_parsing(tmp_path):
+    """The constructor reports a malformed attribute as XISFError."""
+    im = sample_image()
+    raw = im.tobytes()
+    path = tmp_path / "bad.xisf"
+    offset = write_monolithic(path, "", attached=raw)
+    body = (
+        METADATA
+        + '<Image geometry="6:4:3" sampleFormat="UInt16" colorSpace="RGB"'
+        f' compression="zlib:abc" location="attachment:{offset}:{len(raw)}"/>'
+    )
+    write_monolithic(path, body, attached=raw)
+
+    with pytest.raises(XISFError, match="Malformed compression attribute"):
+        XISF(str(path))
+
+
+def test_unknown_codec_with_opaque_parameters_stays_unavailable(tmp_path):
+    """An unsupported codec leaves the rest of the unit accessible (spec 7)."""
+    im = sample_image()
+    raw = im.tobytes()
+    path = tmp_path / "multi.xisf"
+    offset = write_monolithic(path, "", attached=raw)
+    body = (
+        METADATA
+        + '<Image id="broken" geometry="6:4:3" sampleFormat="UInt16"'
+        f' colorSpace="RGB" compression="jpeg:quality=90"'
+        f' location="attachment:{offset}:{len(raw)}"/>'
+        + image_element(im)
+    )
+    write_monolithic(path, body, attached=raw)
+
+    x = XISF(str(path))
+    assert x.get_images_metadata()[0]["compression"] == ("jpeg", None, None)
+    with pytest.raises(NotImplementedError, match="Image broken is not supported"):
+        x.read_image(0)
+    np.testing.assert_array_equal(x.read_image(1), im)
 
 
 def test_channels_first_also_works_for_inline(make_file):

@@ -148,6 +148,10 @@ class XISF:
         "lz4hc": (1, 12),
         "zstd": (1, 22),
     }
+    # Compression codecs implemented by the decoder, without the '+sh'
+    # modifier. A compression attribute naming any other codec leaves its data
+    # block unavailable rather than rejecting the whole XISF unit (spec 7).
+    _compression_codecs = ("lz4", "zstd", "zlib")
     _block_alignment_size = 4096
     _max_inline_block_size = 3072
 
@@ -1720,16 +1724,60 @@ class XISF:
     def _to_location(location_tuple):
         return ":".join([str(e) for e in location_tuple])
 
-    # Returns (codec, uncompressed_size, item_size); item_size is None if not using byte shuffling
+    # Returns (codec, uncompressed_size, item_size); item_size is None if not
+    # using byte shuffling. The standard codecs use the syntaxes
+    #   codec:uncompressed-size            (spec 10.6.4 and following)
+    #   codec+sh:uncompressed-size:item-size
+    # where both values are plain text representations of unsigned integers.
+    # The parameters of a codec this library does not implement are
+    # algorithm-dependent (spec 10.6), so they are left uninterpreted: the
+    # decoder reports the block as unavailable when it is read, while the rest
+    # of the unit stays accessible (spec 7).
     @staticmethod
     def _parse_compression(c):
-        cl = c.split(":")
-        if len(cl) == 3:
-            # (codec+byteshuffling, uncompressed_size, shuffling_item_size)
-            return (cl[0], int(cl[1]), int(cl[2]))
-        else:
-            # (codec, uncompressed_size, None)
-            return (cl[0], int(cl[1]), None)
+        codec, sep, parameters = c.partition(":")
+        if not sep or not codec or not parameters:
+            raise XISFError(
+                f"Malformed compression attribute '{c}': it shall have the form"
+                f" 'codec:parameters' (XISF 1.0 spec, section 10.6)"
+            )
+        if not codec.startswith(XISF._compression_codecs):
+            return (codec, None, None)
+
+        shuffled = codec.endswith("+sh")
+        parts = parameters.split(":")
+        if len(parts) != (2 if shuffled else 1):
+            form = (
+                "codec+sh:uncompressed-size:item-size"
+                if shuffled
+                else "codec:uncompressed-size"
+            )
+            raise XISFError(
+                f"Malformed compression attribute '{c}': the syntax for codec"
+                f" '{codec}' is '{form}' (XISF 1.0 spec, section 10.6)"
+            )
+        try:
+            uncompressed_size = int(parts[0])
+            item_size = int(parts[1]) if shuffled else None
+        except ValueError:
+            raise XISFError(
+                f"Malformed compression attribute '{c}': uncompressed-size"
+                f"{' and item-size' if shuffled else ''} shall be a plain text"
+                f" representation of an unsigned integer (XISF 1.0 spec,"
+                f" section 10.6)"
+            ) from None
+        if uncompressed_size < 0:
+            raise XISFError(
+                f"Malformed compression attribute '{c}': uncompressed-size shall"
+                f" be an unsigned integer (XISF 1.0 spec, section 10.6)"
+            )
+        if item_size is not None and item_size <= 0:
+            raise XISFError(
+                f"Malformed compression attribute '{c}': item-size shall be a"
+                f" positive integer, since it is the length in bytes of a data"
+                f" item (XISF 1.0 spec, section 10.6)"
+            )
+        return (codec, uncompressed_size, item_size)
 
     # Returns [(compressed_size, uncompressed_size), ...] for the compression
     # subblocks described by a subblocks attribute, in storage order:
@@ -2064,7 +2112,7 @@ class XISF:
         # the XISF unit stays accessible (spec 7)
         kind = elem.get("type") and "Property" or "Image"
         owner = f"{kind} {elem.get('id', '<unknown>')}"
-        if not codec.startswith(("lz4", "zstd", "zlib")):
+        if not codec.startswith(XISF._compression_codecs):
             raise NotImplementedError(
                 f"{owner} is not supported: "
                 f"unimplemented compression codec {codec}"
